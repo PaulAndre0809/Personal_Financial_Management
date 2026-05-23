@@ -30,13 +30,74 @@ const isProduction = process.env.NODE_ENV === "production";
 const todayISO = () => new Date().toISOString().slice(0, 10);
 const makeId = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const storageKey = "sama-money-guard-v4";
+const authCooldownStorageKey = "money-guard-auth-cooldown";
+
+function getStoredAuthCooldown() {
+  if (typeof window === "undefined") {
+    return 0;
+  }
+
+  try {
+    const stored = window.localStorage.getItem(authCooldownStorageKey);
+    if (!stored) {
+      return 0;
+    }
+
+    const parsed = JSON.parse(stored);
+    if (typeof parsed?.until === "number" && parsed.until > Date.now()) {
+      return parsed.until;
+    }
+
+    window.localStorage.removeItem(authCooldownStorageKey);
+    return 0;
+  } catch {
+    window.localStorage.removeItem(authCooldownStorageKey);
+    return 0;
+  }
+}
+
+function getCleanDefaultState() {
+  return migrateState({
+    startingCash: 0,
+    transactions: [],
+    bills: [],
+    goals: [],
+    incomeSources: [],
+    settings: {},
+  });
+}
+
+function getUserStorageKey(userId) {
+  return `${storageKey}-${userId}`;
+}
+
+function loadUserLocalBackup(userId) {
+  if (!userId || typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    const saved = window.localStorage.getItem(getUserStorageKey(userId));
+    return saved ? migrateState(JSON.parse(saved)) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveUserLocalBackup(userId, payload) {
+  if (!userId || typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(getUserStorageKey(userId), JSON.stringify(payload));
+}
 
 function getSafeStartupData() {
-  if (!isProduction) {
+  if (!supabaseEnabled && !isProduction) {
     return loadState();
   }
 
-  return migrateState(defaultState);
+  return getCleanDefaultState();
 }
 
 function addDays(date, days) {
@@ -100,7 +161,16 @@ function getNextExpectedIncomeSource(incomeSources = []) {
     .sort((a, b) => new Date(a.expectedDate) - new Date(b.expectedDate))[0] || null;
 }
 
-const defaultState = {
+const cleanDefaultState = {
+  startingCash: 0,
+  transactions: [],
+  bills: [],
+  goals: [],
+  incomeSources: [],
+  settings: {},
+};
+
+const demoDefaultState = {
   startingCash: 13000,
   transactions: [
     {
@@ -228,6 +298,8 @@ const defaultState = {
   settings: {},
 };
 
+const defaultState = cleanDefaultState;
+
 function migrateState(state) {
   const merged = {
     ...defaultState,
@@ -280,7 +352,7 @@ function migrateState(state) {
 
 function loadState() {
   if (typeof window === "undefined") {
-    return migrateState(defaultState);
+    return migrateState(demoDefaultState);
   }
 
   try {
@@ -288,10 +360,36 @@ function loadState() {
       localStorage.getItem(storageKey) ||
       localStorage.getItem("sama-money-guard-v3") ||
       localStorage.getItem("sama-money-guard-v2");
-    return saved ? migrateState(JSON.parse(saved)) : migrateState(defaultState);
+    return saved ? migrateState(JSON.parse(saved)) : migrateState(demoDefaultState);
   } catch {
-    return migrateState(defaultState);
+    return migrateState(demoDefaultState);
   }
+}
+
+async function initializeUserState(userId) {
+  if (!supabaseEnabled || !supabase || !userId) {
+    return getCleanDefaultState();
+  }
+
+  const localBackup = loadUserLocalBackup(userId);
+
+  try {
+    const remotePayload = await loadRemoteState(userId);
+    if (remotePayload) {
+      return migrateState(remotePayload);
+    }
+  } catch {
+    // fall back to user-local backup below
+  }
+
+  if (localBackup) {
+    return migrateState(localBackup);
+  }
+
+  const fresh = getCleanDefaultState();
+  await saveRemoteState(fresh, userId);
+  saveUserLocalBackup(userId, fresh);
+  return fresh;
 }
 
 async function loadRemoteState(userId) {
@@ -574,6 +672,9 @@ export default function MoneyGuardApp() {
   const [authPassword, setAuthPassword] = useState("");
   const [authError, setAuthError] = useState("");
   const [authMessage, setAuthMessage] = useState("");
+  const [signupSuccess, setSignupSuccess] = useState(null);
+  const [authCooldownUntil, setAuthCooldownUntil] = useState(() => getStoredAuthCooldown());
+  const [authRecoveryAction, setAuthRecoveryAction] = useState(null);
   const [data, setData] = useState(() => getSafeStartupData());
   const [tab, setTab] = useState("dashboard");
   const [decisionAmount, setDecisionAmount] = useState("");
@@ -624,22 +725,17 @@ export default function MoneyGuardApp() {
   });
   const [editingIncomeSourceId, setEditingIncomeSourceId] = useState(null);
 
-  const authRequired = isProduction;
+  const authRequired = Boolean(supabaseEnabled);
   const authBlocked = isProduction && !supabaseEnabled;
+  const localOnlyMode = !supabaseEnabled && !isProduction;
 
   useEffect(() => {
     let active = true;
 
     async function hydrate() {
       try {
-        const localFallback = getSafeStartupData();
-
         if (!supabaseEnabled || !supabase) {
-          if (!isProduction) {
-            setData(localFallback);
-          } else {
-            setData(migrateState(defaultState));
-          }
+          setData(getSafeStartupData());
           return;
         }
 
@@ -649,20 +745,15 @@ export default function MoneyGuardApp() {
 
         const nextUser = session?.user ?? null;
         setCurrentUser(nextUser);
-        setSyncStatus("Local only");
+        setSyncStatus(localOnlyMode ? "Local only" : "Ready");
 
-        if (nextUser) {
-          const remotePayload = await loadRemoteState(nextUser.id);
-          setData(remotePayload ? migrateState(remotePayload) : localFallback);
-
-          if (!remotePayload) {
-            await saveRemoteState(localFallback, nextUser.id);
-          }
-        } else if (!isProduction) {
-          setData(localFallback);
-        } else {
-          setData(migrateState(defaultState));
+        if (!nextUser) {
+          setData(getCleanDefaultState());
+          return;
         }
+
+        const hydrated = await initializeUserState(nextUser.id);
+        setData(hydrated);
       } catch {
         setData(getSafeStartupData());
       } finally {
@@ -683,15 +774,15 @@ export default function MoneyGuardApp() {
 
           const nextUser = session?.user ?? null;
           setCurrentUser(nextUser);
-          setSyncStatus("Local only");
+          setSyncStatus(localOnlyMode ? "Local only" : "Ready");
 
           if (!nextUser) {
-            setData(isProduction ? migrateState(defaultState) : loadState());
+            setData(getCleanDefaultState());
             return;
           }
 
-          const remotePayload = await loadRemoteState(nextUser.id);
-          setData(remotePayload ? migrateState(remotePayload) : loadState());
+          const hydrated = await initializeUserState(nextUser.id);
+          setData(hydrated);
         })
       : { data: { subscription: { unsubscribe() {} } } };
 
@@ -699,18 +790,21 @@ export default function MoneyGuardApp() {
       active = false;
       authListener?.subscription.unsubscribe();
     };
-  }, []);
+  }, [localOnlyMode]);
 
   useEffect(() => {
     if (!mounted) {
       return;
     }
 
-    localStorage.setItem(storageKey, JSON.stringify(data));
-
     if (!supabaseEnabled || !currentUser?.id) {
+      if (!supabaseEnabled && !isProduction) {
+        localStorage.setItem(storageKey, JSON.stringify(data));
+      }
       return;
     }
+
+    saveUserLocalBackup(currentUser.id, data);
 
     let active = true;
     window.setTimeout(() => {
@@ -751,6 +845,41 @@ export default function MoneyGuardApp() {
   function notify(title, description) {
     setNotification({ title, description });
   }
+
+  function resetForNewUser() {
+    setCurrentUser(null);
+    setAuthEmail("");
+    setAuthPassword("");
+    setAuthError("");
+    setAuthMessage("");
+    setAuthRecoveryAction(null);
+    setAuthMode("login");
+    setData(getCleanDefaultState());
+    setTab("dashboard");
+    setSyncStatus(localOnlyMode ? "Local only" : "Ready");
+  }
+
+  function clearAuthAlerts() {
+    setAuthError("");
+    setAuthMessage("");
+    setAuthRecoveryAction(null);
+  }
+
+  function setAuthCooldown(until) {
+    setAuthCooldownUntil(until);
+    window.localStorage.setItem(
+      authCooldownStorageKey,
+      JSON.stringify({ until, updatedAt: Date.now() })
+    );
+  }
+
+  function clearAuthCooldown() {
+    setAuthCooldownUntil(0);
+    window.localStorage.removeItem(authCooldownStorageKey);
+  }
+
+  const signupCooldownActive = authMode === "signup" && Date.now() < authCooldownUntil;
+  const authCooldownSeconds = Math.max(0, Math.ceil((authCooldownUntil - Date.now()) / 1000));
 
   const summary = useMemo(() => {
     const income = data.transactions
@@ -877,9 +1006,15 @@ export default function MoneyGuardApp() {
       return;
     }
 
+    if (authMode === "signup" && signupCooldownActive) {
+      setAuthError(`Please wait ${authCooldownSeconds} second${authCooldownSeconds === 1 ? "" : "s"} before trying again.`);
+      return;
+    }
+
     setAuthLoading(true);
     setAuthError("");
     setAuthMessage("");
+    setAuthRecoveryAction(null);
 
     try {
       const result =
@@ -897,6 +1032,20 @@ export default function MoneyGuardApp() {
         throw result.error;
       }
 
+      if (authMode === "signup") {
+        const user = result.data.user;
+        if (user?.id) {
+          await initializeUserState(user.id);
+        }
+        clearAuthCooldown();
+        resetForNewUser();
+        setSignupSuccess({
+          email: authEmail.trim(),
+          message: "Your account was created. Check your email for the confirmation link, then sign in again.",
+        });
+        return;
+      }
+
       const user = result.data.user;
 
       if (!user) {
@@ -904,16 +1053,30 @@ export default function MoneyGuardApp() {
       }
 
       setCurrentUser(user);
-      const remotePayload = await loadRemoteState(user.id);
-      setData(remotePayload ? migrateState(remotePayload) : loadState());
-
-      if (!remotePayload) {
-        await saveRemoteState(loadState(), user.id);
-      }
-
+      const hydrated = await initializeUserState(user.id);
+      setData(hydrated);
       setTab("dashboard");
     } catch (error) {
-      setAuthError(error.message || "Unable to complete authentication.");
+      const message = error.message || "Unable to complete authentication.";
+      const messageLower = message.toLowerCase();
+
+      if (messageLower.includes("rate limit")) {
+        setAuthRecoveryAction("signin");
+        setAuthMode("login");
+        setAuthError("Too many signup attempts. Please wait a few minutes, then try signing in or resetting your password.");
+        setAuthCooldown(Date.now() + 60_000);
+        return;
+      }
+
+      if (messageLower.includes("already") || messageLower.includes("registered") || messageLower.includes("exists")) {
+        setAuthRecoveryAction("signin");
+        setAuthMode("login");
+        setAuthError("This email is already in use. Go to Sign in to continue.");
+        return;
+      }
+
+      setAuthRecoveryAction(null);
+      setAuthError(message);
     } finally {
       setAuthLoading(false);
     }
@@ -952,14 +1115,32 @@ export default function MoneyGuardApp() {
   }
 
   async function handleSignOut() {
+    if (currentUser?.id) {
+      saveUserLocalBackup(currentUser.id, data);
+
+      if (supabaseEnabled && supabase) {
+        try {
+          await saveRemoteState(data, currentUser.id);
+          setSyncStatus("Synced");
+        } catch {
+          setSyncStatus("Sync failed");
+          notify("Sync failed", "Your changes are saved locally. Reconnect to sync again.");
+        }
+      }
+    }
+
     if (supabaseEnabled && supabase) {
       await supabase.auth.signOut();
     }
 
     setCurrentUser(null);
     setLogoutConfirm(false);
-    setSyncStatus("Local only");
-    setData(getSafeStartupData());
+    setSyncStatus(supabaseEnabled ? "Ready" : "Local only");
+    setAuthMode("login");
+    setAuthError("");
+    setAuthMessage("");
+    setAuthRecoveryAction(null);
+    setSignupSuccess(null);
     setTab("dashboard");
   }
 
@@ -1511,6 +1692,43 @@ export default function MoneyGuardApp() {
         </div>
       )}
 
+      {signupSuccess && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/60 px-4">
+          <div className="w-full max-w-md rounded-[1.6rem] bg-white p-6 shadow-2xl">
+            <div className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-emerald-100 text-emerald-700">
+              <CheckCircle2 className="h-6 w-6" />
+            </div>
+            <p className="mt-4 text-lg font-black text-slate-950">Account created</p>
+            <p className="mt-2 text-sm text-slate-600">
+              {signupSuccess.email ? `A confirmation email has been sent to ${signupSuccess.email}.` : "A confirmation email has been sent to your inbox."}
+            </p>
+            <p className="mt-3 rounded-[1.2rem] border border-emerald-100 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700">
+              {signupSuccess.message}
+            </p>
+            <div className="mt-5 flex gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                className="flex-1 rounded-2xl border-slate-200"
+                onClick={() => setSignupSuccess(null)}
+              >
+                Close
+              </Button>
+              <Button
+                type="button"
+                className="flex-1 rounded-2xl bg-slate-950 text-white"
+                onClick={() => {
+                  setSignupSuccess(null);
+                  setAuthMode("login");
+                }}
+              >
+                Sign in
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {authReady && authBlocked ? (
         <div className="mx-auto max-w-md px-4 py-8">
           <PageCard
@@ -1550,8 +1768,14 @@ export default function MoneyGuardApp() {
                   placeholder="••••••••"
                 />
               </Field>
-              <Button type="submit" disabled={authLoading} className="w-full rounded-2xl bg-slate-950 py-6 font-black text-white">
-                {authLoading ? "Working..." : authMode === "login" ? "Sign in" : "Create account"}
+              <Button type="submit" disabled={authLoading || signupCooldownActive} className="w-full rounded-2xl bg-slate-950 py-6 font-black text-white">
+                {authLoading
+                  ? "Working..."
+                  : signupCooldownActive
+                    ? `Try again in ${authCooldownSeconds}s`
+                    : authMode === "login"
+                      ? "Sign in"
+                      : "Create account"}
               </Button>
             </form>
 
@@ -1561,8 +1785,7 @@ export default function MoneyGuardApp() {
                 className="font-bold text-emerald-700"
                 onClick={() => {
                   setAuthMode(authMode === "login" ? "signup" : "login");
-                  setAuthError("");
-                  setAuthMessage("");
+                  clearAuthAlerts();
                 }}
               >
                 {authMode === "login" ? "Need an account? Sign up" : "Already have an account? Sign in"}
@@ -1581,6 +1804,20 @@ export default function MoneyGuardApp() {
                 {authError}
               </div>
             )}
+            {authRecoveryAction === "signin" && (
+              <div className="mt-4 flex gap-2">
+                <Button
+                  type="button"
+                  className="flex-1 rounded-2xl bg-slate-950 text-white"
+                  onClick={() => {
+                    setAuthMode("login");
+                    clearAuthAlerts();
+                  }}
+                >
+                  Go to Sign in
+                </Button>
+              </div>
+            )}
             {authMessage && (
               <div className="mt-4 rounded-2xl border border-emerald-100 bg-emerald-50 p-3 text-sm font-semibold text-emerald-700">
                 {authMessage}
@@ -1594,9 +1831,9 @@ export default function MoneyGuardApp() {
           <div>
             <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-600">Personal Finance</p>
             <h1 className="text-2xl font-black tracking-tight">Money Guard</h1>
-            <p className="mt-1 text-xs font-semibold text-slate-500">{currentUser?.email || (!isProduction ? "Local development mode" : "Login required")}</p>
+            <p className="mt-1 text-xs font-semibold text-slate-500">{currentUser?.email || (supabaseEnabled ? "Login required" : "Local development mode")}</p>
             <p className="mt-1 inline-flex rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.2em] text-slate-600">
-              {syncStatus}
+              {supabaseEnabled && !currentUser ? "Login required" : syncStatus}
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -2082,9 +2319,13 @@ export default function MoneyGuardApp() {
             <PageCard title="Account" subtitle="Manage your signed-in session details.">
               <div className="rounded-[1.4rem] border border-slate-200 bg-slate-50 p-4">
                 <p className="text-xs font-bold uppercase tracking-[0.2em] text-slate-500">Signed in as</p>
-                <p className="mt-2 text-sm font-black text-slate-950">{currentUser?.email || "Local development mode"}</p>
+                <p className="mt-2 text-sm font-black text-slate-950">{currentUser?.email || (supabaseEnabled ? "Login required" : "Local development mode")}</p>
                 <p className="mt-2 text-xs text-slate-500">
-                  {currentUser ? "Your data is synced with your authenticated Supabase account." : "Local development mode keeps data in this browser only."}
+                  {currentUser
+                    ? "Your data is synced with your authenticated Supabase account."
+                    : supabaseEnabled
+                      ? "Sign in to unlock synced finance data."
+                      : "Local development mode keeps data in this browser only."}
                 </p>
               </div>
             </PageCard>
@@ -2094,6 +2335,9 @@ export default function MoneyGuardApp() {
                 <Field label="Starting cash">
                   <input className={inputClass} type="number" value={data.startingCash} onChange={(e) => updateStartingCash(e.target.value)} />
                 </Field>
+                <p className="text-xs text-slate-500">
+                  Starting cash is your baseline cash balance. It is separate from income sources and does not create or edit them.
+                </p>
               </div>
             </PageCard>
 
