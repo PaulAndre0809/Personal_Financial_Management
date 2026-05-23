@@ -1228,40 +1228,66 @@ useEffect(() => {
     }
   }
 
-  async function handleSignOut() {
-    if (currentUser?.id) {
-      saveUserLocalBackup(currentUser.id, data);
+ async function handleSignOut() {
+  const userId = currentUser?.id;
+  const clean = getCleanDefaultState();
 
-      if (supabaseEnabled && supabase) {
-        try {
-          await saveRemoteState(data, currentUser.id);
-          setSyncStatus("Synced");
-        } catch {
-          setSyncStatus("Sync failed");
-          notify("Sync failed", "Your changes are saved locally. Reconnect to sync again.");
-        }
-      }
+  // Always save local backup first. This is instant and safe.
+  if (userId) {
+    try {
+      saveUserLocalBackup(userId, data);
+    } catch {
+      // Local backup failure should not block sign out.
     }
-
-    if (supabaseEnabled && supabase) {
-      await supabase.auth.signOut();
-    }
-
-    setCurrentUser(null);
-    setLogoutConfirm(false);
-    setSyncStatus(supabaseEnabled ? "Ready" : "Local only");
-    setUserDataReady(false);
-    setLastLoadedUserId(null);
-    setUserDataSource("signed-out");
-    setLastSavedSnapshot(JSON.stringify(getCleanDefaultState()));
-    setData(getCleanDefaultState());
-    setAuthMode("login");
-    setAuthError("");
-    setAuthMessage("");
-    setAuthRecoveryAction(null);
-    setSignupSuccess(null);
-    setTab("dashboard");
   }
+
+  // Try remote save, but do not let it block sign out forever.
+  if (userId && supabaseEnabled && supabase) {
+    try {
+      setSyncStatus("Saving");
+
+      await Promise.race([
+        saveRemoteState(data, userId),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("Sign out save timeout")), 3000)
+        ),
+      ]);
+
+      setSyncStatus("Synced");
+    } catch {
+      setSyncStatus("Sync failed");
+      notify(
+        "Sync warning",
+        "Your data was saved locally, but Supabase sync may not have completed before sign out."
+      );
+    }
+  }
+
+  // Sign out should happen regardless of sync result.
+  if (supabaseEnabled && supabase) {
+    try {
+      await supabase.auth.signOut();
+    } catch {
+      notify("Sign out error", "Supabase sign out failed. Please refresh and try again.");
+    }
+  }
+
+  // Clear app state after sign out.
+  setCurrentUser(null);
+  setLogoutConfirm(false);
+  setSyncStatus(supabaseEnabled ? "Ready" : "Local only");
+  setUserDataReady(false);
+  setLastLoadedUserId(null);
+  setUserDataSource("signed-out");
+  setLastSavedSnapshot(JSON.stringify(clean));
+  setData(clean);
+  setAuthMode("login");
+  setAuthError("");
+  setAuthMessage("");
+  setAuthRecoveryAction(null);
+  setSignupSuccess(null);
+  setTab("dashboard");
+}
 
   function resetTransactionForm() {
     setTransactionForm({
