@@ -331,7 +331,14 @@ function migrateState(state) {
     ...merged,
     incomeSources: fallbackIncomeSources,
     bills: (merged.bills || []).map((b) => {
-      const normalized = { recurring: false, endDate: "", status: "Pending", ...b };
+      const normalized = {
+  recurring: false,
+  recurrenceFrequency: "monthly",
+  secondDueDay: "",
+  endDate: "",
+  status: "Pending",
+  ...b,
+};
       normalized.amount = Number(normalized.amount || 0);
       normalized.balance = Number(normalized.balance || 0);
       normalized.remainingAmount = Number(
@@ -531,9 +538,33 @@ function toMonthInputValue(date = new Date()) {
 }
 
 function computeNextDueDate(bill) {
-  const base = bill?.dueDate || todayISO();
-  const next = new Date(base);
-  next.setMonth(next.getMonth() + 1);
+  const baseDate = new Date(bill?.dueDate || todayISO());
+
+  if (bill?.recurrenceFrequency !== "twice-monthly") {
+    const next = new Date(baseDate);
+    next.setMonth(next.getMonth() + 1);
+    return dateISO(next);
+  }
+
+  const firstDueDay = baseDate.getDate();
+  const secondDueDay = Number(bill?.secondDueDay || 0);
+
+  if (!secondDueDay || secondDueDay <= 0 || secondDueDay > 31) {
+    const fallback = new Date(baseDate);
+    fallback.setDate(baseDate.getDate() + 15);
+    return dateISO(fallback);
+  }
+
+  const currentDay = baseDate.getDate();
+  const year = baseDate.getFullYear();
+  const month = baseDate.getMonth();
+
+  if (currentDay < secondDueDay) {
+    const next = new Date(year, month, secondDueDay);
+    return dateISO(next);
+  }
+
+  const next = new Date(year, month + 1, firstDueDay);
   return dateISO(next);
 }
 
@@ -591,18 +622,20 @@ function createNextBillInstance(bill, nextDueDate, override = {}) {
   const remainingAmount = Number(override.remainingAmount ?? (bill.type === "Debt" ? balance : Number(bill.amount || 0)));
 
   return {
-    id: makeId(),
-    name: bill.name,
-    type: bill.type,
-    dueDate: nextDueDate || bill.dueDate,
-    amount: Number(bill.amount || 0),
-    balance,
-    status: "Pending",
-    category: bill.category,
-    recurring: Boolean(bill.recurring),
-    endDate: bill.endDate || "",
-    remainingAmount,
-  };
+  id: makeId(),
+  name: bill.name,
+  type: bill.type,
+  dueDate: nextDueDate || bill.dueDate,
+  amount: Number(bill.amount || 0),
+  balance,
+  status: "Pending",
+  category: bill.category,
+  recurring: Boolean(bill.recurring),
+  recurrenceFrequency: bill.recurrenceFrequency || "monthly",
+  secondDueDay: bill.secondDueDay || "",
+  endDate: bill.endDate || "",
+  remainingAmount,
+};
 }
 
 function updateBillAfterPayment(bill, paymentAmount) {
@@ -719,16 +752,18 @@ export default function MoneyGuardApp() {
     linkedId: "",
   }));
   const [billForm, setBillForm] = useState(() => ({
-    name: "",
-    type: "Bill",
-    dueDate: todayISO(),
-    endDate: "",
-    amount: "",
-    balance: "",
-    status: "Pending",
-    category: "Bills",
-    recurring: false,
-  }));
+  name: "",
+  type: "Bill",
+  dueDate: todayISO(),
+  endDate: "",
+  amount: "",
+  balance: "",
+  status: "Pending",
+  category: "Bills",
+  recurring: false,
+  recurrenceFrequency: "monthly",
+  secondDueDay: "",
+}));
   const [goalForm, setGoalForm] = useState({
     name: "",
     target: "",
@@ -1228,66 +1263,40 @@ useEffect(() => {
     }
   }
 
- async function handleSignOut() {
-  const userId = currentUser?.id;
-  const clean = getCleanDefaultState();
+  async function handleSignOut() {
+    if (currentUser?.id) {
+      saveUserLocalBackup(currentUser.id, data);
 
-  // Always save local backup first. This is instant and safe.
-  if (userId) {
-    try {
-      saveUserLocalBackup(userId, data);
-    } catch {
-      // Local backup failure should not block sign out.
+      if (supabaseEnabled && supabase) {
+        try {
+          await saveRemoteState(data, currentUser.id);
+          setSyncStatus("Synced");
+        } catch {
+          setSyncStatus("Sync failed");
+          notify("Sync failed", "Your changes are saved locally. Reconnect to sync again.");
+        }
+      }
     }
-  }
 
-  // Try remote save, but do not let it block sign out forever.
-  if (userId && supabaseEnabled && supabase) {
-    try {
-      setSyncStatus("Saving");
-
-      await Promise.race([
-        saveRemoteState(data, userId),
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("Sign out save timeout")), 3000)
-        ),
-      ]);
-
-      setSyncStatus("Synced");
-    } catch {
-      setSyncStatus("Sync failed");
-      notify(
-        "Sync warning",
-        "Your data was saved locally, but Supabase sync may not have completed before sign out."
-      );
-    }
-  }
-
-  // Sign out should happen regardless of sync result.
-  if (supabaseEnabled && supabase) {
-    try {
+    if (supabaseEnabled && supabase) {
       await supabase.auth.signOut();
-    } catch {
-      notify("Sign out error", "Supabase sign out failed. Please refresh and try again.");
     }
-  }
 
-  // Clear app state after sign out.
-  setCurrentUser(null);
-  setLogoutConfirm(false);
-  setSyncStatus(supabaseEnabled ? "Ready" : "Local only");
-  setUserDataReady(false);
-  setLastLoadedUserId(null);
-  setUserDataSource("signed-out");
-  setLastSavedSnapshot(JSON.stringify(clean));
-  setData(clean);
-  setAuthMode("login");
-  setAuthError("");
-  setAuthMessage("");
-  setAuthRecoveryAction(null);
-  setSignupSuccess(null);
-  setTab("dashboard");
-}
+    setCurrentUser(null);
+    setLogoutConfirm(false);
+    setSyncStatus(supabaseEnabled ? "Ready" : "Local only");
+    setUserDataReady(false);
+    setLastLoadedUserId(null);
+    setUserDataSource("signed-out");
+    setLastSavedSnapshot(JSON.stringify(getCleanDefaultState()));
+    setData(getCleanDefaultState());
+    setAuthMode("login");
+    setAuthError("");
+    setAuthMessage("");
+    setAuthRecoveryAction(null);
+    setSignupSuccess(null);
+    setTab("dashboard");
+  }
 
   function resetTransactionForm() {
     setTransactionForm({
@@ -1302,19 +1311,21 @@ useEffect(() => {
   }
 
   function resetBillForm() {
-    setBillForm({
-      name: "",
-      type: "Bill",
-      dueDate: todayISO(),
-      endDate: "",
-      amount: "",
-      balance: "",
-      status: "Pending",
-      category: getBillCategory("Bill"),
-      recurring: false,
-    });
-    setEditingBillId(null);
-  }
+  setBillForm({
+    name: "",
+    type: "Bill",
+    dueDate: todayISO(),
+    endDate: "",
+    amount: "",
+    balance: "",
+    status: "Pending",
+    category: getBillCategory("Bill"),
+    recurring: false,
+    recurrenceFrequency: "monthly",
+    secondDueDay: "",
+  });
+  setEditingBillId(null);
+}
 
   function resetGoalForm() {
     setGoalForm({ name: "", target: "", current: "", monthlyTarget: "", priority: "Medium" });
@@ -1335,20 +1346,22 @@ useEffect(() => {
   }
 
   function startEditingBill(bill) {
-    setEditingBillId(bill.id);
-    setBillForm({
-      name: bill.name,
-      type: bill.type,
-      dueDate: bill.dueDate,
-      endDate: bill.endDate || "",
-      amount: String(bill.amount || 0),
-      balance: String(bill.balance || 0),
-      status: bill.status,
-      category: bill.category || getBillCategory(bill.type),
-      recurring: Boolean(bill.recurring),
-    });
-    setTab("bills");
-  }
+  setEditingBillId(bill.id);
+  setBillForm({
+    name: bill.name,
+    type: bill.type,
+    dueDate: bill.dueDate,
+    endDate: bill.endDate || "",
+    amount: String(bill.amount || 0),
+    balance: String(bill.balance || 0),
+    status: bill.status,
+    category: bill.category || getBillCategory(bill.type),
+    recurring: Boolean(bill.recurring),
+    recurrenceFrequency: bill.recurrenceFrequency || "monthly",
+    secondDueDay: bill.secondDueDay ? String(bill.secondDueDay) : "",
+  });
+  setTab("bills");
+}
 
   function startEditingGoal(goal) {
     setEditingGoalId(goal.id);
@@ -1447,19 +1460,35 @@ useEffect(() => {
     }
 
     const normalizedBill = {
-      id: editingBillId || makeId(),
-      ...billForm,
-      category: getBillCategory(billForm.type),
-      amount: Number(billForm.amount),
-      balance: Number(billForm.balance || 0),
-      recurring: Boolean(billForm.recurring),
-      endDate: billForm.type === "Debt" ? billForm.endDate : "",
-      remainingAmount:
-        billForm.type === "Debt" && billForm.balance !== ""
-          ? Number(billForm.balance || 0)
-          : Number(billForm.amount || 0),
-      status: billForm.status || "Pending",
-    };
+  id: editingBillId || makeId(),
+  ...billForm,
+  category: getBillCategory(billForm.type),
+  amount: Number(billForm.amount),
+  balance: Number(billForm.balance || 0),
+  recurring: Boolean(billForm.recurring),
+  recurrenceFrequency: billForm.recurring
+    ? billForm.recurrenceFrequency || "monthly"
+    : "monthly",
+  secondDueDay:
+    billForm.recurring && billForm.recurrenceFrequency === "twice-monthly"
+      ? Number(billForm.secondDueDay || 0)
+      : "",
+  endDate: billForm.type === "Debt" ? billForm.endDate : "",
+  remainingAmount:
+    billForm.type === "Debt" && billForm.balance !== ""
+      ? Number(billForm.balance || 0)
+      : Number(billForm.amount || 0),
+  status: billForm.status || "Pending",
+};
+
+if (
+  normalizedBill.recurring &&
+  normalizedBill.recurrenceFrequency === "twice-monthly" &&
+  (!normalizedBill.secondDueDay || normalizedBill.secondDueDay < 1 || normalizedBill.secondDueDay > 31)
+) {
+  notify("Action needed", "Add a valid second due day between 1 and 31.");
+  return;
+}
 
     setData((prev) => ({
       ...prev,
@@ -1498,16 +1527,16 @@ useEffect(() => {
     notify(editingGoalId ? "Updated" : "Saved", editingGoalId ? "Your goal was updated." : "Your goal has been added successfully.");
   }
 
-  function payBill(bill) {
-    const remaining = getBillRemainingAmount(bill);
+ function payBill(bill) {
+  const remaining = getBillRemainingAmount(bill);
 
-    setPaymentDialog({
-      bill,
-      paymentDate: todayISO(),
-      nextDueDate: bill.recurring ? computeNextDueDate(bill) : "",
-      paymentAmount: String(remaining > 0 ? remaining : bill.amount || 0),
-    });
-  }
+  setPaymentDialog({
+    bill,
+    paymentDate: todayISO(),
+    nextDueDate: bill.recurring ? computeNextDueDate(bill) : "",
+    paymentAmount: String(remaining > 0 ? remaining : bill.amount || 0),
+  });
+}
 
   function handlePaymentConfirm() {
     if (!paymentDialog) return;
@@ -2218,10 +2247,54 @@ useEffect(() => {
                 {billForm.type === "Debt" && (
                   <Field label="Debt balance"><input className={inputClass} type="number" step="0.01" value={billForm.balance} onChange={(e) => setBillForm({ ...billForm, balance: e.target.value })} placeholder="Only for debt" /></Field>
                 )}
-                <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white p-4 text-sm font-bold text-slate-700">
-                  <input type="checkbox" checked={billForm.recurring} onChange={(e) => setBillForm({ ...billForm, recurring: e.target.checked })} />
-                  {billForm.type === "Debt" ? "This debt repeats monthly" : "Recurring monthly obligation"}
-                </label>
+               <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white p-4 text-sm font-bold text-slate-700">
+  <input
+    type="checkbox"
+    checked={billForm.recurring}
+    onChange={(e) =>
+      setBillForm({
+        ...billForm,
+        recurring: e.target.checked,
+        recurrenceFrequency: e.target.checked ? billForm.recurrenceFrequency : "monthly",
+        secondDueDay: e.target.checked ? billForm.secondDueDay : "",
+      })
+    }
+  />
+  {billForm.type === "Debt" ? "This debt repeats" : "Recurring obligation"}
+</label>
+
+{billForm.recurring && (
+  <Field label="Repeat schedule">
+    <select
+      className={inputClass}
+      value={billForm.recurrenceFrequency}
+      onChange={(e) =>
+        setBillForm({
+          ...billForm,
+          recurrenceFrequency: e.target.value,
+          secondDueDay: e.target.value === "twice-monthly" ? billForm.secondDueDay : "",
+        })
+      }
+    >
+      <option value="monthly">Monthly</option>
+      <option value="twice-monthly">Twice per month</option>
+    </select>
+  </Field>
+)}
+
+{billForm.recurring && billForm.recurrenceFrequency === "twice-monthly" && (
+  <Field label="Second due day of the month">
+    <input
+      className={inputClass}
+      type="number"
+      min="1"
+      max="31"
+      value={billForm.secondDueDay}
+      onChange={(e) => setBillForm({ ...billForm, secondDueDay: e.target.value })}
+      placeholder="Example: 20"
+    />
+  </Field>
+)}
                 {billForm.type === "Debt" && (
                   <Field label="End date (optional)">
                     <input className={inputClass} type="date" value={billForm.endDate} onChange={(e) => setBillForm({ ...billForm, endDate: e.target.value })} />
@@ -2750,12 +2823,21 @@ function BillRow({ bill, onPay, onEdit, onDelete, showDelete = false }) {
             <div className="mb-2 flex flex-wrap items-center gap-1.5">
               <span className={`rounded-full border px-2.5 py-1 text-[10px] font-black uppercase tracking-wide ${typeStyle}`}>{bill.type}</span>
               <span className={`rounded-full border px-2.5 py-1 text-[10px] font-black uppercase tracking-wide ${statusStyle}`}>{statusText}</span>
-              {bill.recurring && <span className="rounded-full border border-slate-100 bg-slate-50 px-2.5 py-1 text-[10px] font-black uppercase tracking-wide text-slate-500">Monthly</span>}
+             {bill.recurring && (
+  <span className="rounded-full border border-slate-100 bg-slate-50 px-2.5 py-1 text-[10px] font-black uppercase tracking-wide text-slate-500">
+    {bill.recurrenceFrequency === "twice-monthly" ? "2x Monthly" : "Monthly"}
+  </span>
+)}
             </div>
             <p className="truncate text-base font-black text-slate-950">{bill.name}</p>
             <p className="mt-1 text-xs font-semibold text-slate-500">
               Due {bill.dueDate} {daysUntil >= 0 && !isPaid ? `· ${daysUntil} day(s)` : ""}
             </p>
+            {bill.recurring && bill.recurrenceFrequency === "twice-monthly" && bill.secondDueDay && (
+  <p className="mt-1 text-xs font-semibold text-slate-500">
+    Twice-monthly schedule · second due day: {bill.secondDueDay}
+  </p>
+)}
             {isDebt && bill.endDate && (
               <p className="mt-1 text-xs font-semibold text-slate-500">Active until {bill.endDate}</p>
             )}
