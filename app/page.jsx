@@ -368,28 +368,45 @@ function loadState() {
 
 async function initializeUserState(userId) {
   if (!supabaseEnabled || !supabase || !userId) {
-    return getCleanDefaultState();
+    return {
+      payload: getCleanDefaultState(),
+      source: "clean-default",
+    };
   }
 
   const localBackup = loadUserLocalBackup(userId);
 
   try {
     const remotePayload = await loadRemoteState(userId);
+
     if (remotePayload) {
-      return migrateState(remotePayload);
+      return {
+        payload: migrateState(remotePayload),
+        source: "remote",
+      };
     }
-  } catch {
-    // fall back to user-local backup below
-  }
 
-  if (localBackup) {
-    return migrateState(localBackup);
-  }
+    const fresh = getCleanDefaultState();
+    await saveRemoteState(fresh, userId);
+    saveUserLocalBackup(userId, fresh);
 
-  const fresh = getCleanDefaultState();
-  await saveRemoteState(fresh, userId);
-  saveUserLocalBackup(userId, fresh);
-  return fresh;
+    return {
+      payload: fresh,
+      source: "fresh",
+    };
+  } catch (error) {
+    if (localBackup) {
+      return {
+        payload: migrateState(localBackup),
+        source: "local-backup",
+      };
+    }
+
+    return {
+      payload: getCleanDefaultState(),
+      source: "remote-error",
+    };
+  }
 }
 
 async function loadRemoteState(userId) {
@@ -421,6 +438,7 @@ async function saveRemoteState(payload, userId) {
       {
         user_id: userId,
         payload,
+        updated_at: new Date().toISOString(),
       },
       { onConflict: "user_id" }
     );
@@ -724,114 +742,211 @@ export default function MoneyGuardApp() {
     expectedDate: todayISO(),
   });
   const [editingIncomeSourceId, setEditingIncomeSourceId] = useState(null);
-
+  const [userDataReady, setUserDataReady] = useState(false);
+  const [userDataSource, setUserDataSource] = useState("none");
+  const [lastLoadedUserId, setLastLoadedUserId] = useState(null);
+  
+  const [lastSavedSnapshot, setLastSavedSnapshot] = useState("");
   const authRequired = Boolean(supabaseEnabled);
   const authBlocked = isProduction && !supabaseEnabled;
   const localOnlyMode = !supabaseEnabled && !isProduction;
+  
+  async function loadAndApplyUserState(userId, active = true) {
+    setUserDataReady(false);
+    setLastLoadedUserId(null);
+    setUserDataSource("loading");
 
-  useEffect(() => {
-    let active = true;
+  const result = await initializeUserState(userId);
 
-    async function hydrate() {
-      try {
-        if (!supabaseEnabled || !supabase) {
-          setData(getSafeStartupData());
-          return;
-        }
+  if (!active) {
+    return;
+  }
 
-        const {
-          data: { session },
-        } = await supabase.auth.getSession();
+  const nextPayload = migrateState(result.payload);
 
-        const nextUser = session?.user ?? null;
-        setCurrentUser(nextUser);
-        setSyncStatus(localOnlyMode ? "Local only" : "Ready");
+  setData(nextPayload);
+  setLastLoadedUserId(userId);
+  setUserDataSource(result.source);
+  setLastSavedSnapshot(JSON.stringify(nextPayload));
+  setUserDataReady(true);
 
-        if (!nextUser) {
-          setData(getCleanDefaultState());
-          return;
-        }
+  if (result.source === "remote" || result.source === "fresh") {
+    setSyncStatus("Synced");
+  } else if (result.source === "local-backup") {
+    setSyncStatus("Local backup");
+    notify("Loaded local backup", "Supabase could not be reached, so your local backup was loaded.");
+  } else if (result.source === "remote-error") {
+    setSyncStatus("Sync failed");
+    notify("Sync failed", "Supabase could not load your data. No remote data was overwritten.");
+  } else {
+    setSyncStatus("Ready");
+  }
+}
 
-        const hydrated = await initializeUserState(nextUser.id);
-        setData(hydrated);
-      } catch {
-        setData(getSafeStartupData());
-      } finally {
+useEffect(() => {
+  let active = true;
+
+  async function hydrate() {
+    try {
+      setUserDataReady(false);
+
+      if (!supabaseEnabled || !supabase) {
+        const localData = getSafeStartupData();
+
         if (active) {
-          setAuthReady(true);
-          setMounted(true);
+          setData(localData);
+          setLastSavedSnapshot(JSON.stringify(localData));
+          setUserDataSource(localOnlyMode ? "local-dev" : "none");
+          setUserDataReady(localOnlyMode);
         }
+
+        return;
+      }
+
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      const nextUser = session?.user ?? null;
+
+      if (!active) {
+        return;
+      }
+
+      setCurrentUser(nextUser);
+      setSyncStatus(localOnlyMode ? "Local only" : "Ready");
+
+      if (!nextUser) {
+        const clean = getCleanDefaultState();
+
+        setData(clean);
+        setLastSavedSnapshot(JSON.stringify(clean));
+        setLastLoadedUserId(null);
+        setUserDataSource("signed-out");
+        setUserDataReady(false);
+        return;
+      }
+
+      await loadAndApplyUserState(nextUser.id, active);
+    } catch (error) {
+      const fallback = getSafeStartupData();
+
+      if (active) {
+        setData(fallback);
+        setLastSavedSnapshot(JSON.stringify(fallback));
+        setUserDataSource("hydrate-error");
+        setUserDataReady(false);
+        setSyncStatus("Sync failed");
+      }
+    } finally {
+      if (active) {
+        setAuthReady(true);
+        setMounted(true);
       }
     }
+  }
 
-    hydrate();
+  hydrate();
 
-    const { data: authListener } = supabaseEnabled && supabase
+  const { data: authListener } =
+    supabaseEnabled && supabase
       ? supabase.auth.onAuthStateChange(async (_event, session) => {
           if (!active) {
             return;
           }
+
+          setUserDataReady(false);
 
           const nextUser = session?.user ?? null;
           setCurrentUser(nextUser);
           setSyncStatus(localOnlyMode ? "Local only" : "Ready");
 
           if (!nextUser) {
-            setData(getCleanDefaultState());
+            const clean = getCleanDefaultState();
+
+            setData(clean);
+            setLastSavedSnapshot(JSON.stringify(clean));
+            setLastLoadedUserId(null);
+            setUserDataSource("signed-out");
+            setUserDataReady(false);
             return;
           }
 
-          const hydrated = await initializeUserState(nextUser.id);
-          setData(hydrated);
+          await loadAndApplyUserState(nextUser.id, active);
         })
       : { data: { subscription: { unsubscribe() {} } } };
 
-    return () => {
-      active = false;
-      authListener?.subscription.unsubscribe();
-    };
-  }, [localOnlyMode]);
+  return () => {
+    active = false;
+    authListener?.subscription.unsubscribe();
+  };
+}, [localOnlyMode]);
 
-  useEffect(() => {
-    if (!mounted) {
-      return;
+   
+
+ useEffect(() => {
+  if (!mounted) {
+    return;
+  }
+
+  if (!supabaseEnabled || !currentUser?.id) {
+    if (!supabaseEnabled && !isProduction) {
+      localStorage.setItem(storageKey, JSON.stringify(data));
+      setLastSavedSnapshot(JSON.stringify(data));
     }
+    return;
+  }
 
-    if (!supabaseEnabled || !currentUser?.id) {
-      if (!supabaseEnabled && !isProduction) {
-        localStorage.setItem(storageKey, JSON.stringify(data));
+  if (!userDataReady) {
+    return;
+  }
+
+  if (lastLoadedUserId !== currentUser.id) {
+    return;
+  }
+
+  const nextSnapshot = JSON.stringify(data);
+
+  if (nextSnapshot === lastSavedSnapshot) {
+    return;
+  }
+
+  saveUserLocalBackup(currentUser.id, data);
+
+  let active = true;
+  setSyncStatus("Saving");
+
+  saveRemoteState(data, currentUser.id)
+    .then(() => {
+      if (!active) {
+        return;
       }
-      return;
-    }
 
-    saveUserLocalBackup(currentUser.id, data);
-
-    let active = true;
-    window.setTimeout(() => {
-      if (active) {
-        setSyncStatus("Saving");
+      setLastSavedSnapshot(nextSnapshot);
+      setSyncStatus("Synced");
+    })
+    .catch(() => {
+      if (!active) {
+        return;
       }
-    }, 0);
 
-    saveRemoteState(data, currentUser.id)
-      .then(() => {
-        if (active) {
-          setSyncStatus("Synced");
-        }
-      })
-      .catch(() => {
-        if (!active) {
-          return;
-        }
+      setSyncStatus("Sync failed");
+      notify("Sync failed", "Your changes are saved locally. Reconnect to sync again.");
+    });
 
-        setSyncStatus("Sync failed");
-        notify("Sync failed", "Your changes are saved locally. Reconnect to sync again.");
-      });
+  return () => {
+    active = false;
+  };
+}, [
+  data,
+  mounted,
+  currentUser,
+  userDataReady,
+  lastLoadedUserId,
+  lastSavedSnapshot,
+]);
 
-    return () => {
-      active = false;
-    };
-  }, [data, mounted, currentUser]);
+   
 
   useEffect(() => {
     if (!notification) {
@@ -1035,7 +1150,7 @@ export default function MoneyGuardApp() {
       if (authMode === "signup") {
         const user = result.data.user;
         if (user?.id) {
-          await initializeUserState(user.id);
+        await initializeUserState(user.id);
         }
         clearAuthCooldown();
         resetForNewUser();
@@ -1052,10 +1167,9 @@ export default function MoneyGuardApp() {
         throw new Error("No authenticated user was returned.");
       }
 
-      setCurrentUser(user);
-      const hydrated = await initializeUserState(user.id);
-      setData(hydrated);
-      setTab("dashboard");
+     setCurrentUser(user);
+     await loadAndApplyUserState(user.id, true);
+     setTab("dashboard");
     } catch (error) {
       const message = error.message || "Unable to complete authentication.";
       const messageLower = message.toLowerCase();
@@ -1136,6 +1250,11 @@ export default function MoneyGuardApp() {
     setCurrentUser(null);
     setLogoutConfirm(false);
     setSyncStatus(supabaseEnabled ? "Ready" : "Local only");
+    setUserDataReady(false);
+    setLastLoadedUserId(null);
+    setUserDataSource("signed-out");
+    setLastSavedSnapshot(JSON.stringify(getCleanDefaultState()));
+    setData(getCleanDefaultState());
     setAuthMode("login");
     setAuthError("");
     setAuthMessage("");
@@ -2328,7 +2447,43 @@ export default function MoneyGuardApp() {
                       : "Local development mode keeps data in this browser only."}
                 </p>
               </div>
+              {currentUser && (
+  <div className="mt-3">
+    <Button
+      type="button"
+      className="w-full rounded-2xl bg-slate-950 text-white"
+      onClick={async () => {
+        try {
+          setSyncStatus("Saving");
+          await saveRemoteState(data, currentUser.id);
+          saveUserLocalBackup(currentUser.id, data);
+          setLastSavedSnapshot(JSON.stringify(data));
+          setSyncStatus("Synced");
+          notify("Saved", "Your data has been saved to Supabase.");
+        } catch {
+          setSyncStatus("Sync failed");
+          notify("Sync failed", "Your data could not be saved to Supabase.");
+        }
+      }}
+    >
+      Save now
+    </Button>
+  </div>
+)}
             </PageCard>
+            {process.env.NODE_ENV === "development" && (
+  <PageCard title="Debug sync status" subtitle="Development-only Supabase state check.">
+    <div className="space-y-1 rounded-[1.4rem] bg-slate-950 p-4 text-xs font-semibold text-white">
+      <p>supabaseEnabled: {String(supabaseEnabled)}</p>
+      <p>currentUser: {currentUser?.email || "none"}</p>
+      <p>currentUserId: {currentUser?.id || "none"}</p>
+      <p>userDataReady: {String(userDataReady)}</p>
+      <p>userDataSource: {userDataSource}</p>
+      <p>lastLoadedUserId: {lastLoadedUserId || "none"}</p>
+      <p>syncStatus: {syncStatus}</p>
+    </div>
+  </PageCard>
+)}
 
             <PageCard title="Money setup" subtitle="Set your starting cash and track flexible income sources. Safe-to-spend uses confirmed income only.">
               <div className="space-y-3">
