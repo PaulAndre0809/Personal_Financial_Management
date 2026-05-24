@@ -333,31 +333,31 @@ function migrateState(state) {
     ...merged,
     incomeSources: fallbackIncomeSources,
     bills: (merged.bills || []).map((b) => {
-  const normalized = {
-    recurring: false,
-    recurrenceFrequency: "monthly",
-    secondDueDay: "",
-    endDate: "",
-    status: "Pending",
-    ...b,
-  };
+      const normalized = {
+        recurring: false,
+        recurrenceFrequency: "monthly",
+        secondDueDay: "",
+        endDate: "",
+        status: "Pending",
+        ...b,
+      };
 
-  normalized.amount = Number(normalized.amount || 0);
-  normalized.balance = Number(normalized.balance || 0);
+      normalized.amount = Number(normalized.amount || 0);
+      normalized.balance = Number(normalized.balance || 0);
 
-  const rawRemaining = Number(
-    normalized.remainingAmount ?? normalized.amount ?? 0
-  );
+      const rawRemaining = Number(
+        normalized.remainingAmount ?? normalized.amount ?? 0
+      );
 
-  normalized.remainingAmount =
-    normalized.status === "Paid"
-      ? 0
-      : normalized.type === "Debt"
-        ? Math.min(rawRemaining || normalized.amount, normalized.amount)
-        : rawRemaining || normalized.amount;
+      normalized.remainingAmount =
+        normalized.status === "Paid"
+          ? 0
+          : normalized.type === "Debt"
+            ? Math.min(rawRemaining || normalized.amount, normalized.amount)
+            : rawRemaining || normalized.amount;
 
-  return normalized;
-}),
+      return normalized;
+    }),
     goals: (merged.goals || []).map((g) => ({ monthlyTarget: 0, priority: "Medium", ...g })),
   };
 }
@@ -613,7 +613,6 @@ function getBillRemainingAmount(bill) {
   return Number(bill.remainingAmount ?? bill.amount ?? 0);
 }
 
-
 function getBillStatusFromRemaining(bill, remainingAmount) {
   const amount = Number(bill.amount || 0);
 
@@ -657,6 +656,7 @@ function createNextBillInstance(bill, nextDueDate, override = {}) {
 function updateBillAfterPayment(bill, paymentAmount) {
   const currentRemaining = getBillRemainingAmount(bill);
   const nextRemaining = Math.max(currentRemaining - paymentAmount, 0);
+
   const updatedBill = {
     ...bill,
     status: getBillStatusFromRemaining(bill, nextRemaining),
@@ -665,7 +665,6 @@ function updateBillAfterPayment(bill, paymentAmount) {
 
   if (bill.type === "Debt") {
     updatedBill.balance = Math.max(Number(bill.balance || 0) - paymentAmount, 0);
-    updatedBill.remainingAmount = updatedBill.balance;
   }
 
   return updatedBill;
@@ -768,18 +767,18 @@ export default function MoneyGuardApp() {
     linkedId: "",
   }));
   const [billForm, setBillForm] = useState(() => ({
-  name: "",
-  type: "Bill",
-  dueDate: todayISO(),
-  endDate: "",
-  amount: "",
-  balance: "",
-  status: "Pending",
-  category: "Bills",
-  recurring: false,
-  recurrenceFrequency: "monthly",
-  secondDueDay: "",
-}));
+    name: "",
+    type: "Bill",
+    dueDate: todayISO(),
+    endDate: "",
+    amount: "",
+    balance: "",
+    status: "Pending",
+    category: "Bills",
+    recurring: false,
+    recurrenceFrequency: "monthly",
+    secondDueDay: "",
+  }));
   const [goalForm, setGoalForm] = useState({
     name: "",
     target: "",
@@ -796,313 +795,311 @@ export default function MoneyGuardApp() {
   const [userDataReady, setUserDataReady] = useState(false);
   const [userDataSource, setUserDataSource] = useState("none");
   const [lastLoadedUserId, setLastLoadedUserId] = useState(null);
-  
   const [lastSavedSnapshot, setLastSavedSnapshot] = useState("");
-
-function scrollToRef(ref) {
-  window.setTimeout(() => {
-    ref.current?.scrollIntoView({
-      behavior: "smooth",
-      block: "start",
-    });
-  }, 80);
-}
   const transactionFormRef = useRef(null);
-const billFormRef = useRef(null);
-const goalFormRef = useRef(null);
-const incomeSourceFormRef = useRef(null);
+  const billFormRef = useRef(null);
+  const goalFormRef = useRef(null);
+  const incomeSourceFormRef = useRef(null);
+
+  function scrollToRef(ref) {
+    window.setTimeout(() => {
+      ref.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    }, 80);
+  }
 
   const authRequired = Boolean(supabaseEnabled);
   const authBlocked = isProduction && !supabaseEnabled;
   const localOnlyMode = !supabaseEnabled && !isProduction;
-  
+
   async function loadAndApplyUserState(userId, active = true) {
-  setUserDataReady(false);
-  setLastLoadedUserId(null);
-  setUserDataSource("loading");
+    setUserDataReady(false);
+    setLastLoadedUserId(null);
+    setUserDataSource("loading");
 
-  try {
-    const result = await withTimeout(
-      initializeUserState(userId),
-      5000,
-      "Supabase took too long to load your finance data."
-    );
-
-    if (!active) {
-      return;
-    }
-
-    const nextPayload = migrateState(result.payload);
-
-    setData(nextPayload);
-    setLastLoadedUserId(userId);
-    setUserDataSource(result.source);
-    setLastSavedSnapshot(JSON.stringify(nextPayload));
-    setUserDataReady(true);
-
-    if (result.source === "remote" || result.source === "fresh") {
-      setSyncStatus("Synced");
-    } else if (result.source === "local-backup") {
-      setSyncStatus("Local backup");
-      notify("Loaded local backup", "Supabase could not be reached, so your local backup was loaded.");
-    } else if (result.source === "remote-error") {
-      setSyncStatus("Sync failed");
-      notify("Sync failed", "Supabase could not load your data. No remote data was overwritten.");
-    } else {
-      setSyncStatus("Ready");
-    }
-  } catch (error) {
-    if (!active) {
-      return;
-    }
-
-    const localBackup = loadUserLocalBackup(userId);
-    const fallback = migrateState(localBackup || getCleanDefaultState());
-
-    setData(fallback);
-    setLastLoadedUserId(userId);
-    setUserDataSource(localBackup ? "local-backup-timeout" : "load-timeout");
-    setLastSavedSnapshot(JSON.stringify(fallback));
-    setUserDataReady(Boolean(localBackup));
-    setSyncStatus("Sync failed");
-
-    notify(
-      "Loading warning",
-      error?.message || "Finance data took too long to load. Local backup was used if available."
-    );
-  }
-}
-
-useEffect(() => {
-  let active = true;
-
-  async function hydrate() {
     try {
-      setUserDataReady(false);
+      const result = await withTimeout(
+        initializeUserState(userId),
+        5000,
+        "Supabase took too long to load your finance data."
+      );
 
-      if (!supabaseEnabled || !supabase) {
-        const localData = getSafeStartupData();
+      if (!active) {
+        return;
+      }
 
-        if (active) {
-          setData(localData);
-          setLastSavedSnapshot(JSON.stringify(localData));
-          setUserDataSource(localOnlyMode ? "local-dev" : "none");
-          setUserDataReady(localOnlyMode);
+      const nextPayload = migrateState(result.payload);
+
+      setData(nextPayload);
+      setLastLoadedUserId(userId);
+      setUserDataSource(result.source);
+      setLastSavedSnapshot(JSON.stringify(nextPayload));
+      setUserDataReady(true);
+
+      if (result.source === "remote" || result.source === "fresh") {
+        setSyncStatus("Synced");
+      } else if (result.source === "local-backup") {
+        setSyncStatus("Local backup");
+        notify("Loaded local backup", "Supabase could not be reached, so your local backup was loaded.");
+      } else if (result.source === "remote-error") {
+        setSyncStatus("Sync failed");
+        notify("Sync failed", "Supabase could not load your data. No remote data was overwritten.");
+      } else {
+        setSyncStatus("Ready");
+      }
+    } catch (error) {
+      if (!active) {
+        return;
+      }
+
+      const localBackup = loadUserLocalBackup(userId);
+      const fallback = migrateState(localBackup || getCleanDefaultState());
+
+      setData(fallback);
+      setLastLoadedUserId(userId);
+      setUserDataSource(localBackup ? "local-backup-timeout" : "load-timeout");
+      setLastSavedSnapshot(JSON.stringify(fallback));
+      setUserDataReady(Boolean(localBackup));
+      setSyncStatus("Sync failed");
+
+      notify(
+        "Loading warning",
+        error?.message || "Finance data took too long to load. Local backup was used if available."
+      );
+    }
+  }
+
+  useEffect(() => {
+    let active = true;
+
+    async function hydrate() {
+      try {
+        setUserDataReady(false);
+
+        if (!supabaseEnabled || !supabase) {
+          const localData = getSafeStartupData();
+
+          if (active) {
+            setData(localData);
+            setLastSavedSnapshot(JSON.stringify(localData));
+            setUserDataSource(localOnlyMode ? "local-dev" : "none");
+            setUserDataReady(localOnlyMode);
+          }
+
+          return;
         }
 
-        return;
-      }
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
 
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
+        const nextUser = session?.user ?? null;
 
-      const nextUser = session?.user ?? null;
+        if (!active) {
+          return;
+        }
 
-      if (!active) {
-        return;
-      }
+        setCurrentUser(nextUser);
+        setSyncStatus(localOnlyMode ? "Local only" : "Ready");
 
-      setCurrentUser(nextUser);
-      setSyncStatus(localOnlyMode ? "Local only" : "Ready");
+        if (!nextUser) {
+          const clean = getCleanDefaultState();
 
-      if (!nextUser) {
-        const clean = getCleanDefaultState();
-
-        setData(clean);
-        setLastSavedSnapshot(JSON.stringify(clean));
-        setLastLoadedUserId(null);
-        setUserDataSource("signed-out");
-        setUserDataReady(false);
-        return;
-      }
-
-      await loadAndApplyUserState(nextUser.id, active);
-    } catch (error) {
-      const fallback = getSafeStartupData();
-
-      if (active) {
-        setData(fallback);
-        setLastSavedSnapshot(JSON.stringify(fallback));
-        setUserDataSource("hydrate-error");
-        setUserDataReady(false);
-        setSyncStatus("Sync failed");
-      }
-    } finally {
-      if (active) {
-        setAuthReady(true);
-        setMounted(true);
-      }
-    }
-  }
-
-  hydrate();
-
-  const { data: authListener } =
-    supabaseEnabled && supabase
-      ? supabase.auth.onAuthStateChange(async (_event, session) => {
-          if (!active) {
-            return;
-          }
-
+          setData(clean);
+          setLastSavedSnapshot(JSON.stringify(clean));
+          setLastLoadedUserId(null);
+          setUserDataSource("signed-out");
           setUserDataReady(false);
+          return;
+        }
 
-          const nextUser = session?.user ?? null;
-          setCurrentUser(nextUser);
-          setSyncStatus(localOnlyMode ? "Local only" : "Ready");
+        await loadAndApplyUserState(nextUser.id, active);
+      } catch (error) {
+        const fallback = getSafeStartupData();
 
-          if (!nextUser) {
-            const clean = getCleanDefaultState();
-
-            setData(clean);
-            setLastSavedSnapshot(JSON.stringify(clean));
-            setLastLoadedUserId(null);
-            setUserDataSource("signed-out");
-            setUserDataReady(false);
-            return;
-          }
-
-          await loadAndApplyUserState(nextUser.id, active);
-        })
-      : { data: { subscription: { unsubscribe() {} } } };
-
-  return () => {
-    active = false;
-    authListener?.subscription.unsubscribe();
-  };
-}, [localOnlyMode]);
-
-   
-
- useEffect(() => {
-  if (!mounted) {
-    return;
-  }
-
-  if (!supabaseEnabled || !currentUser?.id) {
-    if (!supabaseEnabled && !isProduction) {
-      localStorage.setItem(storageKey, JSON.stringify(data));
-      setLastSavedSnapshot(JSON.stringify(data));
+        if (active) {
+          setData(fallback);
+          setLastSavedSnapshot(JSON.stringify(fallback));
+          setUserDataSource("hydrate-error");
+          setUserDataReady(false);
+          setSyncStatus("Sync failed");
+        }
+      } finally {
+        if (active) {
+          setAuthReady(true);
+          setMounted(true);
+        }
+      }
     }
-    return;
-  }
 
-  if (!userDataReady) {
-    return;
-  }
+    hydrate();
 
-  if (lastLoadedUserId !== currentUser.id) {
-    return;
-  }
+    const { data: authListener } =
+      supabaseEnabled && supabase
+        ? supabase.auth.onAuthStateChange(async (_event, session) => {
+            if (!active) {
+              return;
+            }
 
-  const nextSnapshot = JSON.stringify(data);
+            setUserDataReady(false);
 
-  if (nextSnapshot === lastSavedSnapshot) {
-    return;
-  }
+            const nextUser = session?.user ?? null;
+            setCurrentUser(nextUser);
+            setSyncStatus(localOnlyMode ? "Local only" : "Ready");
 
-  saveUserLocalBackup(currentUser.id, data);
+            if (!nextUser) {
+              const clean = getCleanDefaultState();
 
-  let active = true;
-  setSyncStatus("Saving");
+              setData(clean);
+              setLastSavedSnapshot(JSON.stringify(clean));
+              setLastLoadedUserId(null);
+              setUserDataSource("signed-out");
+              setUserDataReady(false);
+              return;
+            }
 
-  saveRemoteState(data, currentUser.id)
-    .then(() => {
-      if (!active) {
-        return;
+            await loadAndApplyUserState(nextUser.id, active);
+          })
+        : { data: { subscription: { unsubscribe() {} } } };
+
+    return () => {
+      active = false;
+      authListener?.subscription?.unsubscribe?.();
+    };
+  }, [localOnlyMode]);
+
+  useEffect(() => {
+    if (!mounted) {
+      return;
+    }
+
+    if (!supabaseEnabled || !currentUser?.id) {
+      if (!supabaseEnabled && !isProduction) {
+        localStorage.setItem(storageKey, JSON.stringify(data));
+        setLastSavedSnapshot(JSON.stringify(data));
       }
+      return;
+    }
 
-      setLastSavedSnapshot(nextSnapshot);
-      setSyncStatus("Synced");
-    })
-    .catch(() => {
-      if (!active) {
-        return;
-      }
+    if (!userDataReady) {
+      return;
+    }
 
-      setSyncStatus("Sync failed");
-      notify("Sync failed", "Your changes are saved locally. Reconnect to sync again.");
-    });
+    if (lastLoadedUserId !== currentUser.id) {
+      return;
+    }
 
-  return () => {
-    active = false;
-  };
-}, [
-  data,
-  mounted,
-  currentUser,
-  userDataReady,
-  lastLoadedUserId,
-  lastSavedSnapshot,
-]);
+    const nextSnapshot = JSON.stringify(data);
 
-   
+    if (nextSnapshot === lastSavedSnapshot) {
+      return;
+    }
+
+    saveUserLocalBackup(currentUser.id, data);
+
+    let active = true;
+    setSyncStatus("Saving");
+
+    saveRemoteState(data, currentUser.id)
+      .then(() => {
+        if (!active) {
+          return;
+        }
+
+        setLastSavedSnapshot(nextSnapshot);
+        setSyncStatus("Synced");
+      })
+      .catch(() => {
+        if (!active) {
+          return;
+        }
+
+        setSyncStatus("Sync failed");
+        notify("Sync failed", "Your changes are saved locally. Reconnect to sync again.");
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [
+    data,
+    mounted,
+    currentUser,
+    userDataReady,
+    lastLoadedUserId,
+    lastSavedSnapshot,
+  ]);
 
   useEffect(() => {
     if (!notification) {
       return;
     }
-    useEffect(() => {
-  if (!currentUser || !supabaseEnabled || !supabase) {
-    return;
-  }
-
-  let timeoutId;
-
-  function markActivity() {
-    window.localStorage.setItem(lastActivityStorageKey, String(Date.now()));
-
-    window.clearTimeout(timeoutId);
-    timeoutId = window.setTimeout(() => {
-      handleSignOut();
-      notify("Signed out", "You were signed out after being inactive.");
-    }, inactivityLimitMs);
-  }
-
-  const events = ["click", "keydown", "touchstart", "mousemove", "scroll"];
-
-  events.forEach((eventName) => {
-    window.addEventListener(eventName, markActivity, { passive: true });
-  });
-
-  markActivity();
-
-  return () => {
-    window.clearTimeout(timeoutId);
-    events.forEach((eventName) => {
-      window.removeEventListener(eventName, markActivity);
-    });
-  };
-}, [currentUser?.id]);
-
-useEffect(() => {
-  if (!currentUser || !supabaseEnabled || !supabase) {
-    return;
-  }
-
-  function checkStaleSession() {
-    const lastActivity = Number(window.localStorage.getItem(lastActivityStorageKey) || 0);
-
-    if (lastActivity && Date.now() - lastActivity > inactivityLimitMs) {
-      handleSignOut();
-      notify("Signed out", "You were signed out because the session was inactive.");
-    }
-  }
-
-  checkStaleSession();
-
-  window.addEventListener("focus", checkStaleSession);
-  document.addEventListener("visibilitychange", checkStaleSession);
-
-  return () => {
-    window.removeEventListener("focus", checkStaleSession);
-    document.removeEventListener("visibilitychange", checkStaleSession);
-  };
-}, [currentUser?.id]);
 
     const timeoutId = window.setTimeout(() => setNotification(null), 3200);
     return () => window.clearTimeout(timeoutId);
   }, [notification]);
+
+  // ── Inactivity auto sign-out ──────────────────────────────────────────────
+  useEffect(() => {
+    if (!currentUser || !supabaseEnabled || !supabase) {
+      return;
+    }
+
+    let timeoutId;
+
+    function markActivity() {
+      window.localStorage.setItem(lastActivityStorageKey, String(Date.now()));
+
+      window.clearTimeout(timeoutId);
+      timeoutId = window.setTimeout(() => {
+        handleSignOut();
+        notify("Signed out", "You were signed out after being inactive.");
+      }, inactivityLimitMs);
+    }
+
+    const events = ["click", "keydown", "touchstart", "mousemove", "scroll"];
+
+    events.forEach((eventName) => {
+      window.addEventListener(eventName, markActivity, { passive: true });
+    });
+
+    markActivity();
+
+    return () => {
+      window.clearTimeout(timeoutId);
+      events.forEach((eventName) => {
+        window.removeEventListener(eventName, markActivity);
+      });
+    };
+  }, [currentUser?.id]);
+
+  // ── Stale-session check on tab focus / visibility change ──────────────────
+  useEffect(() => {
+    if (!currentUser || !supabaseEnabled || !supabase) {
+      return;
+    }
+
+    function checkStaleSession() {
+      const lastActivity = Number(window.localStorage.getItem(lastActivityStorageKey) || 0);
+
+      if (lastActivity && Date.now() - lastActivity > inactivityLimitMs) {
+        handleSignOut();
+        notify("Signed out", "You were signed out because the session was inactive.");
+      }
+    }
+
+    checkStaleSession();
+
+    window.addEventListener("focus", checkStaleSession);
+    document.addEventListener("visibilitychange", checkStaleSession);
+
+    return () => {
+      window.removeEventListener("focus", checkStaleSession);
+      document.removeEventListener("visibilitychange", checkStaleSession);
+    };
+  }, [currentUser?.id]);
 
   function notify(title, description) {
     setNotification({ title, description });
@@ -1297,7 +1294,7 @@ useEffect(() => {
       if (authMode === "signup") {
         const user = result.data.user;
         if (user?.id) {
-        await initializeUserState(user.id);
+          await initializeUserState(user.id);
         }
         clearAuthCooldown();
         resetForNewUser();
@@ -1314,9 +1311,9 @@ useEffect(() => {
         throw new Error("No authenticated user was returned.");
       }
 
-     setCurrentUser(user);
-     await loadAndApplyUserState(user.id, true);
-     setTab("dashboard");
+      setCurrentUser(user);
+      await loadAndApplyUserState(user.id, true);
+      setTab("dashboard");
     } catch (error) {
       const message = error.message || "Unable to complete authentication.";
       const messageLower = message.toLowerCase();
@@ -1376,65 +1373,65 @@ useEffect(() => {
   }
 
   async function handleSignOut() {
-  const userId = currentUser?.id;
-  const clean = getCleanDefaultState();
+    const userId = currentUser?.id;
+    const clean = getCleanDefaultState();
 
-  if (userId) {
-    try {
-      saveUserLocalBackup(userId, data);
-    } catch {
-      // Local backup should not block sign out.
+    if (userId) {
+      try {
+        saveUserLocalBackup(userId, data);
+      } catch {
+        // Local backup should not block sign out.
+      }
     }
-  }
 
-  if (userId && supabaseEnabled && supabase) {
-    try {
-      setSyncStatus("Saving");
+    if (userId && supabaseEnabled && supabase) {
+      try {
+        setSyncStatus("Saving");
 
-      await Promise.race([
-        saveRemoteState(data, userId),
-        new Promise((_, reject) =>
-          window.setTimeout(() => reject(new Error("Sign out save timeout")), 3000)
-        ),
-      ]);
+        await Promise.race([
+          saveRemoteState(data, userId),
+          new Promise((_, reject) =>
+            window.setTimeout(() => reject(new Error("Sign out save timeout")), 3000)
+          ),
+        ]);
 
-      setSyncStatus("Synced");
-    } catch {
-      setSyncStatus("Sync failed");
-      notify(
-        "Sync warning",
-        "Your data was saved locally, but Supabase sync may not have completed before sign out."
-      );
+        setSyncStatus("Synced");
+      } catch {
+        setSyncStatus("Sync failed");
+        notify(
+          "Sync warning",
+          "Your data was saved locally, but Supabase sync may not have completed before sign out."
+        );
+      }
     }
-  }
 
-  if (supabaseEnabled && supabase) {
-    try {
-      await supabase.auth.signOut();
-    } catch {
-      notify("Sign out error", "Supabase sign out failed. Please refresh and try again.");
+    if (supabaseEnabled && supabase) {
+      try {
+        await supabase.auth.signOut();
+      } catch {
+        notify("Sign out error", "Supabase sign out failed. Please refresh and try again.");
+      }
     }
+
+    window.localStorage.removeItem(lastActivityStorageKey);
+
+    setCurrentUser(null);
+    setLogoutConfirm(false);
+    setAuthReady(true);
+    setMounted(true);
+    setSyncStatus(supabaseEnabled ? "Ready" : "Local only");
+    setUserDataReady(false);
+    setLastLoadedUserId(null);
+    setUserDataSource("signed-out");
+    setLastSavedSnapshot(JSON.stringify(clean));
+    setData(clean);
+    setAuthMode("login");
+    setAuthError("");
+    setAuthMessage("");
+    setAuthRecoveryAction(null);
+    setSignupSuccess(null);
+    setTab("dashboard");
   }
-
-  window.localStorage.removeItem(lastActivityStorageKey);
-
-  setCurrentUser(null);
-  setLogoutConfirm(false);
-  setAuthReady(true);
-  setMounted(true);
-  setSyncStatus(supabaseEnabled ? "Ready" : "Local only");
-  setUserDataReady(false);
-  setLastLoadedUserId(null);
-  setUserDataSource("signed-out");
-  setLastSavedSnapshot(JSON.stringify(clean));
-  setData(clean);
-  setAuthMode("login");
-  setAuthError("");
-  setAuthMessage("");
-  setAuthRecoveryAction(null);
-  setSignupSuccess(null);
-  setTab("dashboard");
-}
 
   function resetTransactionForm() {
     setTransactionForm({
@@ -1449,21 +1446,21 @@ useEffect(() => {
   }
 
   function resetBillForm() {
-  setBillForm({
-    name: "",
-    type: "Bill",
-    dueDate: todayISO(),
-    endDate: "",
-    amount: "",
-    balance: "",
-    status: "Pending",
-    category: getBillCategory("Bill"),
-    recurring: false,
-    recurrenceFrequency: "monthly",
-    secondDueDay: "",
-  });
-  setEditingBillId(null);
-}
+    setBillForm({
+      name: "",
+      type: "Bill",
+      dueDate: todayISO(),
+      endDate: "",
+      amount: "",
+      balance: "",
+      status: "Pending",
+      category: getBillCategory("Bill"),
+      recurring: false,
+      recurrenceFrequency: "monthly",
+      secondDueDay: "",
+    });
+    setEditingBillId(null);
+  }
 
   function resetGoalForm() {
     setGoalForm({ name: "", target: "", current: "", monthlyTarget: "", priority: "Medium" });
@@ -1471,53 +1468,53 @@ useEffect(() => {
   }
 
   function startEditingTransaction(transaction) {
-  setEditingTransactionId(transaction.id);
-  setTransactionForm({
-    date: transaction.date,
-    type: transaction.type,
-    category: transaction.category || "Food",
-    amount: String(transaction.amount || 0),
-    notes: transaction.notes || "",
-    linkedId: transaction.linkedId || "",
-  });
-  setTab("add");
-  scrollToRef(transactionFormRef);
-  notify("Edit mode", "Scroll up to update this transaction.");
-}
+    setEditingTransactionId(transaction.id);
+    setTransactionForm({
+      date: transaction.date,
+      type: transaction.type,
+      category: transaction.category || "Food",
+      amount: String(transaction.amount || 0),
+      notes: transaction.notes || "",
+      linkedId: transaction.linkedId || "",
+    });
+    setTab("add");
+    scrollToRef(transactionFormRef);
+    notify("Edit mode", "Scroll up to update this transaction.");
+  }
 
   function startEditingBill(bill) {
-  setEditingBillId(bill.id);
-  setBillForm({
-    name: bill.name,
-    type: bill.type,
-    dueDate: bill.dueDate,
-    endDate: bill.endDate || "",
-    amount: String(bill.amount || 0),
-    balance: String(bill.balance || 0),
-    status: bill.status,
-    category: bill.category || getBillCategory(bill.type),
-    recurring: Boolean(bill.recurring),
-    recurrenceFrequency: bill.recurrenceFrequency || "monthly",
-    secondDueDay: bill.secondDueDay ? String(bill.secondDueDay) : "",
-  });
-  setTab("bills");
-  scrollToRef(billFormRef);
-  notify("Edit mode", "Scroll up to update this bill or debt.");
-}
+    setEditingBillId(bill.id);
+    setBillForm({
+      name: bill.name,
+      type: bill.type,
+      dueDate: bill.dueDate,
+      endDate: bill.endDate || "",
+      amount: String(bill.amount || 0),
+      balance: String(bill.balance || 0),
+      status: bill.status,
+      category: bill.category || getBillCategory(bill.type),
+      recurring: Boolean(bill.recurring),
+      recurrenceFrequency: bill.recurrenceFrequency || "monthly",
+      secondDueDay: bill.secondDueDay ? String(bill.secondDueDay) : "",
+    });
+    setTab("bills");
+    scrollToRef(billFormRef);
+    notify("Edit mode", "Scroll up to update this bill or debt.");
+  }
 
   function startEditingGoal(goal) {
-  setEditingGoalId(goal.id);
-  setGoalForm({
-    name: goal.name,
-    target: String(goal.target || 0),
-    current: String(goal.current || 0),
-    monthlyTarget: String(goal.monthlyTarget || 0),
-    priority: goal.priority || "Medium",
-  });
-  setTab("goals");
-  scrollToRef(goalFormRef);
-  notify("Edit mode", "Scroll up to update this goal.");
-}
+    setEditingGoalId(goal.id);
+    setGoalForm({
+      name: goal.name,
+      target: String(goal.target || 0),
+      current: String(goal.current || 0),
+      monthlyTarget: String(goal.monthlyTarget || 0),
+      priority: goal.priority || "Medium",
+    });
+    setTab("goals");
+    scrollToRef(goalFormRef);
+    notify("Edit mode", "Scroll up to update this goal.");
+  }
 
   function addTransaction(e) {
     e.preventDefault();
@@ -1604,35 +1601,35 @@ useEffect(() => {
     }
 
     const normalizedBill = {
-  id: editingBillId || makeId(),
-  ...billForm,
-  category: getBillCategory(billForm.type),
-  amount: Number(billForm.amount),
-  balance: Number(billForm.balance || 0),
-  recurring: Boolean(billForm.recurring),
-  recurrenceFrequency: billForm.recurring
-    ? billForm.recurrenceFrequency || "monthly"
-    : "monthly",
-  secondDueDay:
-    billForm.recurring && billForm.recurrenceFrequency === "twice-monthly"
-      ? Number(billForm.secondDueDay || 0)
-      : "",
-  endDate: billForm.type === "Debt" ? billForm.endDate : "",
-  remainingAmount:
-    billForm.type === "Debt" && billForm.balance !== ""
-      ? Number(billForm.balance || 0)
-      : Number(billForm.amount || 0),
-  status: billForm.status || "Pending",
-};
+      id: editingBillId || makeId(),
+      ...billForm,
+      category: getBillCategory(billForm.type),
+      amount: Number(billForm.amount),
+      balance: Number(billForm.balance || 0),
+      recurring: Boolean(billForm.recurring),
+      recurrenceFrequency: billForm.recurring
+        ? billForm.recurrenceFrequency || "monthly"
+        : "monthly",
+      secondDueDay:
+        billForm.recurring && billForm.recurrenceFrequency === "twice-monthly"
+          ? Number(billForm.secondDueDay || 0)
+          : "",
+      endDate: billForm.type === "Debt" ? billForm.endDate : "",
+      remainingAmount:
+        billForm.type === "Debt" && billForm.balance !== ""
+          ? Number(billForm.balance || 0)
+          : Number(billForm.amount || 0),
+      status: billForm.status || "Pending",
+    };
 
-if (
-  normalizedBill.recurring &&
-  normalizedBill.recurrenceFrequency === "twice-monthly" &&
-  (!normalizedBill.secondDueDay || normalizedBill.secondDueDay < 1 || normalizedBill.secondDueDay > 31)
-) {
-  notify("Action needed", "Add a valid second due day between 1 and 31.");
-  return;
-}
+    if (
+      normalizedBill.recurring &&
+      normalizedBill.recurrenceFrequency === "twice-monthly" &&
+      (!normalizedBill.secondDueDay || normalizedBill.secondDueDay < 1 || normalizedBill.secondDueDay > 31)
+    ) {
+      notify("Action needed", "Add a valid second due day between 1 and 31.");
+      return;
+    }
 
     setData((prev) => ({
       ...prev,
@@ -1671,84 +1668,84 @@ if (
     notify(editingGoalId ? "Updated" : "Saved", editingGoalId ? "Your goal was updated." : "Your goal has been added successfully.");
   }
 
- function payBill(bill) {
-  const remaining = getBillRemainingAmount(bill);
+  function payBill(bill) {
+    const remaining = getBillRemainingAmount(bill);
 
-  setPaymentDialog({
-    bill,
-    paymentDate: todayISO(),
-    nextDueDate: bill.recurring ? computeNextDueDate(bill) : "",
-    paymentAmount: String(remaining > 0 ? remaining : bill.amount || 0),
-  });
-}
+    setPaymentDialog({
+      bill,
+      paymentDate: todayISO(),
+      nextDueDate: bill.recurring ? computeNextDueDate(bill) : "",
+      paymentAmount: String(remaining > 0 ? remaining : bill.amount || 0),
+    });
+  }
 
   function handlePaymentConfirm() {
-  if (!paymentDialog) return;
+    if (!paymentDialog) return;
 
-  const { bill, paymentDate, nextDueDate, paymentAmount } = paymentDialog;
-  const amount = Number(paymentAmount);
-  const remaining = getBillRemainingAmount(bill);
+    const { bill, paymentDate, nextDueDate, paymentAmount } = paymentDialog;
+    const amount = Number(paymentAmount);
+    const remaining = getBillRemainingAmount(bill);
 
-  if (!amount || amount <= 0) {
-    notify("Action needed", "Enter a payment amount before saving.");
-    return;
-  }
-
-  if (amount > remaining) {
-    notify("Action needed", "This payment would exceed the current remaining amount for this item.");
-    return;
-  }
-
-  setData((prev) => {
-    const updatedBill = updateBillAfterPayment(bill, amount);
-    const isFullyPaid = updatedBill.status === "Paid";
-
-    const paymentTransaction = {
-      id: makeId(),
-      date: paymentDate,
-      type: bill.type === "Debt" ? "debt_payment" : "bill_payment",
-      category: bill.category,
-      amount,
-      notes: `Payment for ${bill.name}`,
-      linkedId: bill.id,
-    };
-
-    let bills = prev.bills.filter((item) => item.id !== bill.id);
-
-    if (!isFullyPaid) {
-      bills = [updatedBill, ...bills];
+    if (!amount || amount <= 0) {
+      notify("Action needed", "Enter a payment amount before saving.");
+      return;
     }
 
-    if (bill.recurring && isFullyPaid) {
-      const nextBalance = Number(updatedBill.balance || 0);
+    if (amount > remaining) {
+      notify("Action needed", "This payment would exceed the current remaining amount for this item.");
+      return;
+    }
 
-      if (bill.type !== "Debt" || nextBalance > 0) {
-        const nextInstance = createNextBillInstance(
-          bill,
-          nextDueDate || computeNextDueDate(bill),
-          {
-            balance: nextBalance,
-            remainingAmount:
-              bill.type === "Debt"
-                ? Math.min(Number(bill.amount || 0), nextBalance)
-                : Number(bill.amount || 0),
-          }
-        );
+    setData((prev) => {
+      const updatedBill = updateBillAfterPayment(bill, amount);
+      const isFullyPaid = updatedBill.status === "Paid";
 
-        bills = [nextInstance, ...bills];
+      const paymentTransaction = {
+        id: makeId(),
+        date: paymentDate,
+        type: bill.type === "Debt" ? "debt_payment" : "bill_payment",
+        category: bill.category,
+        amount,
+        notes: `Payment for ${bill.name}`,
+        linkedId: bill.id,
+      };
+
+      let bills = prev.bills.filter((item) => item.id !== bill.id);
+
+      if (!isFullyPaid) {
+        bills = [updatedBill, ...bills];
       }
-    }
 
-    return {
-      ...prev,
-      bills,
-      transactions: [paymentTransaction, ...prev.transactions],
-    };
-  });
+      if (bill.recurring && isFullyPaid) {
+        const nextBalance = Number(updatedBill.balance || 0);
 
-  notify("Payment recorded", `Payment recorded for ${bill.name}. The next ticket was prepared if recurring.`);
-  setPaymentDialog(null);
-}
+        if (bill.type !== "Debt" || nextBalance > 0) {
+          const nextInstance = createNextBillInstance(
+            bill,
+            nextDueDate || computeNextDueDate(bill),
+            {
+              balance: nextBalance,
+              remainingAmount:
+                bill.type === "Debt"
+                  ? Math.min(Number(bill.amount || 0), nextBalance)
+                  : Number(bill.amount || 0),
+            }
+          );
+
+          bills = [nextInstance, ...bills];
+        }
+      }
+
+      return {
+        ...prev,
+        bills,
+        transactions: [paymentTransaction, ...prev.transactions],
+      };
+    });
+
+    notify("Payment recorded", `Payment recorded for ${bill.name}. The next ticket was prepared if recurring.`);
+    setPaymentDialog(null);
+  }
 
   function deleteItem(type, id) {
     const item = data[type].find((entry) => entry.id === id);
@@ -1786,16 +1783,16 @@ if (
   }
 
   function startEditingIncomeSource(source) {
-  setEditingIncomeSourceId(source.id);
-  setIncomeSourceForm({
-    name: source.name,
-    amount: String(source.amount || 0),
-    expectedDate: source.expectedDate || todayISO(),
-  });
-  setTab("settings");
-  scrollToRef(incomeSourceFormRef);
-  notify("Edit mode", "Scroll up to update this income source.");
-}
+    setEditingIncomeSourceId(source.id);
+    setIncomeSourceForm({
+      name: source.name,
+      amount: String(source.amount || 0),
+      expectedDate: source.expectedDate || todayISO(),
+    });
+    setTab("settings");
+    scrollToRef(incomeSourceFormRef);
+    notify("Edit mode", "Scroll up to update this income source.");
+  }
 
   function addIncomeSource(e) {
     e.preventDefault();
@@ -1983,8 +1980,8 @@ if (
           <div className="w-full max-w-md rounded-[1.6rem] bg-white p-5 shadow-2xl">
             <p className="text-lg font-black text-slate-950">Update payment ticket</p>
             <p className="mt-1 text-sm text-slate-500">
-  Record this payment. If it is fully paid and recurring, the app will move it to the next due date.
-</p>
+              Record this payment. If it is fully paid and recurring, the app will move it to the next due date.
+            </p>
 
             <div className="mt-4 space-y-3">
               <Field label="Payment amount">
@@ -2167,721 +2164,720 @@ if (
         </div>
       ) : mounted ? (
         <div className="mx-auto max-w-md px-4 pt-5 sm:max-w-lg">
-        <header className="mb-5 flex items-center justify-between">
-          <div>
-            <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-600">Personal Finance</p>
-            <h1 className="text-2xl font-black tracking-tight">Money Guard</h1>
-            <p className="mt-1 text-xs font-semibold text-slate-500">{currentUser?.email || (supabaseEnabled ? "Login required" : "Local development mode")}</p>
-            <p className="mt-1 inline-flex rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.2em] text-slate-600">
-              {supabaseEnabled && !currentUser ? "Login required" : syncStatus}
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            {currentUser && (
+          <header className="mb-5 flex items-center justify-between">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-600">Personal Finance</p>
+              <h1 className="text-2xl font-black tracking-tight">Money Guard</h1>
+              <p className="mt-1 text-xs font-semibold text-slate-500">{currentUser?.email || (supabaseEnabled ? "Login required" : "Local development mode")}</p>
+              <p className="mt-1 inline-flex rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.2em] text-slate-600">
+                {supabaseEnabled && !currentUser ? "Login required" : syncStatus}
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              {currentUser && (
+                <Button
+                  variant="outline"
+                  className="h-10 rounded-full border-slate-200 bg-white px-4 text-xs font-bold text-slate-900"
+                  onClick={() => setLogoutConfirm(true)}
+                >
+                  Sign out
+                </Button>
+              )}
               <Button
                 variant="outline"
                 className="h-10 rounded-full border-slate-200 bg-white px-4 text-xs font-bold text-slate-900"
-                onClick={() => setLogoutConfirm(true)}
+                onClick={() => {
+                  if (confirm("Reset all demo data?")) setData(migrateState(defaultState));
+                }}
               >
-                Sign out
+                Reset
               </Button>
-            )}
-            <Button
-              variant="outline"
-              className="h-10 rounded-full border-slate-200 bg-white px-4 text-xs font-bold text-slate-900"
-              onClick={() => {
-                if (confirm("Reset all demo data?")) setData(migrateState(defaultState));
-              }}
-            >
-              Reset
-            </Button>
-          </div>
-        </header>
-
-        {tab === "dashboard" && (
-          <section className="space-y-4">
-            <MoneyCard
-              label="Safe to Spend"
-              value={peso.format(summary.safeToSpend)}
-              helper={summary.warning}
-              tone={summary.safeToSpend >= 3000 ? "emerald" : summary.safeToSpend >= 0 ? "amber" : "red"}
-              icon={summary.safeToSpend >= 0 ? CheckCircle2 : AlertTriangle}
-            />
-
-            {(summary.overdueBills.length > 0 || summary.dueSoonBills.length > 0) && (
-              <div className="rounded-[1.4rem] border border-red-100 bg-red-50 p-4">
-                <div className="flex gap-3">
-                  <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-red-600" />
-                  <div>
-                    <p className="font-black text-red-700">Payment warning</p>
-                    <p className="mt-1 text-xs font-semibold text-red-600">
-                      {summary.overdueBills.length > 0
-                        ? `${summary.overdueBills.length} overdue item(s). Handle these before any wants.`
-                        : `${summary.dueSoonBills.length} item(s) due in the next 3 days.`}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            <div className="grid grid-cols-2 gap-3">
-              <SmallStat label="Cash Now" value={peso.format(summary.currentCash)} sub="Tracked cash balance" />
-              <SmallStat
-                label="Goals This Month"
-                value={peso.format(summary.goalStillNeededThisMonth)}
-                sub={`${peso.format(summary.goalContributedThisMonth)} paid of ${peso.format(summary.goalMonthlyTarget)}`}
-                danger={summary.goalStillNeededThisMonth > 0}
-              />
-              <SmallStat
-                label="Expected Income"
-                value={peso.format(summary.expectedIncomeThisMonth)}
-                sub="Scheduled this month"
-              />
-              <SmallStat
-                label="Received Income"
-                value={peso.format(summary.receivedIncomeThisMonth)}
-                sub="Confirmed income this month"
-              />
-              <SmallStat
-                label="Next Income"
-                value={summary.nextIncomeSource ? peso.format(summary.nextIncomeSource.amount) : "None"}
-                sub={summary.daysUntilIncome === null ? "Add an income source" : summary.daysUntilIncome === 0 ? "Today" : `${summary.daysUntilIncome} day(s) left`}
-              />
-              <SmallStat label="Debt Left" value={peso.format(summary.totalDebtBalance)} sub="Tracked debt balance" danger={summary.totalDebtBalance > 0} />
-              <SmallStat label="Monthly Bills" value={peso.format(summary.monthlyObligations)} sub="Recurring bills + active debts" danger={summary.monthlyObligations > 0} />
             </div>
+          </header>
 
-            <Card className="rounded-[1.7rem] border-0 shadow-sm">
-              <CardContent className="p-4">
-                <div className="mb-3 flex items-center justify-between">
-                  <div>
-                    <h2 className="font-black">Can I buy this?</h2>
-                    <p className="text-xs text-slate-500">Checks bills plus your monthly savings goals.</p>
-                  </div>
-                  <ShieldCheck className="h-5 w-5 text-emerald-600" />
-                </div>
-                <input
-                  className={inputClass}
-                  type="number"
-                  placeholder="Amount"
-                  value={decisionAmount}
-                  onChange={(e) => setDecisionAmount(e.target.value)}
-                />
-                {decisionAmount && (
-                  <div
-                    className={`mt-3 rounded-2xl p-3 text-sm font-bold ${
-                      Number(decisionAmount) <= summary.safeToSpend
-                        ? "bg-emerald-50 text-emerald-700"
-                        : "bg-red-50 text-red-700"
-                    }`}
-                  >
-                    {Number(decisionAmount) <= summary.safeToSpend
-                      ? `Allowed. Safe money after buying: ${peso.format(summary.safeToSpend - Number(decisionAmount))}`
-                      : `Do not buy. You are short by ${peso.format(Number(decisionAmount) - summary.safeToSpend)}.`}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
+          {tab === "dashboard" && (
+            <section className="space-y-4">
+              <MoneyCard
+                label="Safe to Spend"
+                value={peso.format(summary.safeToSpend)}
+                helper={summary.warning}
+                tone={summary.safeToSpend >= 3000 ? "emerald" : summary.safeToSpend >= 0 ? "amber" : "red"}
+                icon={summary.safeToSpend >= 0 ? CheckCircle2 : AlertTriangle}
+              />
 
-            <Card className="rounded-[1.7rem] border-0 shadow-sm">
-              <CardContent className="p-4">
-                <div className="mb-3 flex items-center justify-between">
-                  <div>
-                    <h2 className="font-black">Monthly goal payments</h2>
-                    <p className="text-xs text-slate-500">These are treated as required this month.</p>
-                  </div>
-                  <Target className="h-5 w-5 text-emerald-600" />
-                </div>
-                <div className="space-y-2">
-                  {data.goals.map((g) => (
-                    <div key={g.id} className="flex items-center justify-between rounded-2xl bg-slate-50 p-3">
-                      <div>
-                        <p className="text-sm font-black">{g.name}</p>
-                        <p className="text-xs text-slate-500">Monthly target</p>
-                      </div>
-                      <p className="font-black text-slate-950">{peso.format(g.monthlyTarget || 0)}</p>
+              {(summary.overdueBills.length > 0 || summary.dueSoonBills.length > 0) && (
+                <div className="rounded-[1.4rem] border border-red-100 bg-red-50 p-4">
+                  <div className="flex gap-3">
+                    <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-red-600" />
+                    <div>
+                      <p className="font-black text-red-700">Payment warning</p>
+                      <p className="mt-1 text-xs font-semibold text-red-600">
+                        {summary.overdueBills.length > 0
+                          ? `${summary.overdueBills.length} overdue item(s). Handle these before any wants.`
+                          : `${summary.dueSoonBills.length} item(s) due in the next 3 days.`}
+                      </p>
                     </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
-
-            <SectionTitle title="Next bills to handle" action="View all" onClick={() => setTab("bills")} />
-            <div className="space-y-2">
-              {summary.unpaidBills.slice(0, 4).map((b) => (
-                <BillRow key={b.id} bill={b} onPay={() => payBill(b)} />
-              ))}
-              {summary.unpaidBills.length === 0 && <EmptyBox text="No unpaid bills. Good. Keep it boring." />}
-            </div>
-
-            <SectionTitle title="Savings goals" action="View" onClick={() => setTab("goals")} />
-            <div className="space-y-3">
-              {data.goals.slice(0, 3).map((g) => (
-                <GoalRow key={g.id} goal={g} />
-              ))}
-            </div>
-          </section>
-        )}
-
-        {tab === "add" && (
-          <div ref={transactionFormRef}>
-  <PageCard title="Add money movement" subtitle="Income, expense, bill payment, debt payment, or savings.">
-    
-            <form onSubmit={addTransaction} className="space-y-3">
-              <Field label="Date">
-                <input className={inputClass} type="date" value={transactionForm.date} onChange={(e) => setTransactionForm({ ...transactionForm, date: e.target.value })} />
-              </Field>
-              <Field label="Type">
-                <select className={inputClass} value={transactionForm.type} onChange={(e) => setTransactionForm({ ...transactionForm, type: e.target.value, linkedId: "" })}>
-                  <option value="income">Income</option>
-                  <option value="expense">Expense</option>
-                  <option value="bill_payment">Bill Payment</option>
-                  <option value="debt_payment">Debt Payment</option>
-                  <option value="savings">Savings Contribution</option>
-                </select>
-              </Field>
-              {!['bill_payment', 'debt_payment', 'savings'].includes(transactionForm.type) && (
-                <Field label="Category">
-                  <select className={inputClass} value={transactionForm.category} onChange={(e) => setTransactionForm({ ...transactionForm, category: e.target.value })}>
-                    <option>Salary</option>
-                    <option>Food</option>
-                    <option>Daughter</option>
-                    <option>Motorcycle</option>
-                    <option>Debt</option>
-                    <option>Bills</option>
-                    <option>Gym</option>
-                    <option>Vacation</option>
-                    <option>Shopping</option>
-                    <option>Going Out</option>
-                    <option>Coffee</option>
-                    <option>Family</option>
-                    <option>Business</option>
-                  </select>
-                </Field>
-              )}
-              <Field label="Amount">
-                <input className={inputClass} type="number" step="0.01" value={transactionForm.amount} onChange={(e) => setTransactionForm({ ...transactionForm, amount: e.target.value })} placeholder="0.00" />
-              </Field>
-
-              {["bill_payment", "debt_payment"].includes(transactionForm.type) && (
-                <Field label="Link to bill/debt">
-                  <select className={inputClass} value={transactionForm.linkedId} onChange={(e) => setTransactionForm({ ...transactionForm, linkedId: e.target.value })}>
-                    <option value="">Not linked</option>
-                    {data.bills.filter((b) => b.status !== "Paid").map((b) => (
-                      <option key={b.id} value={b.id}>{b.name} · {peso.format(b.amount)}</option>
-                    ))}
-                  </select>
-                </Field>
-              )}
-
-              {transactionForm.type === "savings" && (
-                <Field label="Savings goal">
-                  <select className={inputClass} value={transactionForm.linkedId} onChange={(e) => setTransactionForm({ ...transactionForm, linkedId: e.target.value })}>
-                    <option value="">Choose goal</option>
-                    {data.goals.map((g) => <option key={g.id} value={g.id}>{g.name} · target {peso.format(g.monthlyTarget || 0)}/mo</option>)}
-                  </select>
-                </Field>
-              )}
-
-              <Field label="Notes">
-                <input className={inputClass} value={transactionForm.notes} onChange={(e) => setTransactionForm({ ...transactionForm, notes: e.target.value })} placeholder="Optional" />
-              </Field>
-              <Button className="w-full rounded-2xl bg-slate-950 py-6 text-base font-black text-white">
-                {editingTransactionId ? "Update transaction" : "Save"}
-              </Button>
-              {editingTransactionId && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="w-full rounded-2xl border-slate-200 bg-white text-sm font-black text-slate-700"
-                  onClick={resetTransactionForm}
-                >
-                  Cancel edit
-                </Button>
-              )}
-            </form>
-           </PageCard>
-</div>
-        )}
-
-        {tab === "bills" && (
-          <section className="space-y-4">
-            <div ref={billFormRef}>
-  <PageCard title="Add bill or debt" subtitle="Anything you need to pay later goes here first.">
-              <form onSubmit={addBill} className="space-y-3">
-                <Field label="Name"><input className={inputClass} value={billForm.name} onChange={(e) => setBillForm({ ...billForm, name: e.target.value })} placeholder="Example: Gym, SPayLater" /></Field>
-                <Field label="Type"><select className={inputClass} value={billForm.type} onChange={(e) => setBillForm({ ...billForm, type: e.target.value, category: getBillCategory(e.target.value) })}><option>Bill</option><option>Debt</option></select></Field>
-                <p className="-mt-1 text-xs font-semibold text-slate-500">Category is auto-assigned from the type you choose.</p>
-                <Field label="Due date"><input className={inputClass} type="date" value={billForm.dueDate} onChange={(e) => setBillForm({ ...billForm, dueDate: e.target.value })} /></Field>
-                <Field label="Amount due"><input className={inputClass} type="number" step="0.01" value={billForm.amount} onChange={(e) => setBillForm({ ...billForm, amount: e.target.value })} /></Field>
-                {billForm.type === "Debt" && (
-                  <Field label="Debt balance"><input className={inputClass} type="number" step="0.01" value={billForm.balance} onChange={(e) => setBillForm({ ...billForm, balance: e.target.value })} placeholder="Only for debt" /></Field>
-                )}
-               <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white p-4 text-sm font-bold text-slate-700">
-  <input
-    type="checkbox"
-    checked={billForm.recurring}
-    onChange={(e) =>
-      setBillForm({
-        ...billForm,
-        recurring: e.target.checked,
-        recurrenceFrequency: e.target.checked ? billForm.recurrenceFrequency : "monthly",
-        secondDueDay: e.target.checked ? billForm.secondDueDay : "",
-      })
-    }
-  />
-  {billForm.type === "Debt" ? "This debt repeats" : "Recurring obligation"}
-</label>
-
-{billForm.recurring && (
-  <Field label="Repeat schedule">
-    <select
-      className={inputClass}
-      value={billForm.recurrenceFrequency}
-      onChange={(e) =>
-        setBillForm({
-          ...billForm,
-          recurrenceFrequency: e.target.value,
-          secondDueDay: e.target.value === "twice-monthly" ? billForm.secondDueDay : "",
-        })
-      }
-    >
-      <option value="monthly">Monthly</option>
-      <option value="twice-monthly">Twice per month</option>
-    </select>
-  </Field>
-)}
-
-{billForm.recurring && billForm.recurrenceFrequency === "twice-monthly" && (
-  <Field label="Second due day of the month">
-    <input
-      className={inputClass}
-      type="number"
-      min="1"
-      max="31"
-      value={billForm.secondDueDay}
-      onChange={(e) => setBillForm({ ...billForm, secondDueDay: e.target.value })}
-      placeholder="Example: 20"
-    />
-  </Field>
-)}
-                {billForm.type === "Debt" && (
-                  <Field label="End date (optional)">
-                    <input className={inputClass} type="date" value={billForm.endDate} onChange={(e) => setBillForm({ ...billForm, endDate: e.target.value })} />
-                  </Field>
-                )}
-                <Button className="w-full rounded-2xl bg-slate-950 py-6 font-black text-white">{editingBillId ? "Update bill/debt" : "Save bill/debt"}</Button>
-                {editingBillId && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="w-full rounded-2xl border-slate-200 bg-white text-sm font-black text-slate-700"
-                    onClick={resetBillForm}
-                  >
-                    Cancel edit
-                  </Button>
-                )}
-              </form>
-            </PageCard>
-</div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="rounded-[1.4rem] border border-blue-100 bg-blue-50 p-4">
-                <p className="text-[11px] font-bold uppercase tracking-wide text-blue-700">Monthly bills</p>
-                <p className="mt-2 text-2xl font-black text-slate-950">{peso.format(summary.monthlyBillsTotal)}</p>
-                <p className="mt-1 text-xs font-semibold text-slate-600">Active recurring bills</p>
-              </div>
-              <div className="rounded-[1.4rem] border border-red-100 bg-red-50 p-4">
-                <p className="text-[11px] font-bold uppercase tracking-wide text-red-700">Monthly debts</p>
-                <p className="mt-2 text-2xl font-black text-slate-950">{peso.format(summary.monthlyDebtsTotal)}</p>
-                <p className="mt-1 text-xs font-semibold text-slate-600">Active recurring debts</p>
-              </div>
-            </div>
-
-            <div className="grid gap-3 sm:grid-cols-3">
-              <Field label="Search">
-                <input
-                  className={inputClass}
-                  placeholder="Search name or category"
-                  value={billSearch}
-                  onChange={(e) => setBillSearch(e.target.value)}
-                />
-              </Field>
-              <Field label="Type">
-                <select className={inputClass} value={billTypeFilter} onChange={(e) => setBillTypeFilter(e.target.value)}>
-                  <option value="all">All</option>
-                  <option value="Bill">Bill</option>
-                  <option value="Debt">Debt</option>
-                </select>
-              </Field>
-              <Field label="Status">
-                <select className={inputClass} value={billStatusFilter} onChange={(e) => setBillStatusFilter(e.target.value)}>
-                  <option value="all">All</option>
-                  <option value="Pending">Pending</option>
-                  <option value="Partial">Partial</option>
-                  <option value="Paid">Paid</option>
-                </select>
-              </Field>
-            </div>
-
-            {(() => {
-              const visibleBills = data.bills
-                .filter((b) => b.type === "Bill" && isActiveMonthlyObligation(b))
-                .filter((b) => billTypeFilter === "all" || b.type === billTypeFilter)
-                .filter((b) => billStatusFilter === "all" || b.status === billStatusFilter)
-                .filter((b) => {
-                  const search = billSearch.trim().toLowerCase();
-                  return (
-                    search.length === 0 ||
-                    b.name.toLowerCase().includes(search) ||
-                    (b.category || "").toLowerCase().includes(search)
-                  );
-                });
-
-              const visibleDebts = data.bills
-                .filter((b) => b.type === "Debt" && isActiveMonthlyObligation(b))
-                .filter((b) => billTypeFilter === "all" || b.type === billTypeFilter)
-                .filter((b) => billStatusFilter === "all" || b.status === billStatusFilter)
-                .filter((b) => {
-                  const search = billSearch.trim().toLowerCase();
-                  return (
-                    search.length === 0 ||
-                    b.name.toLowerCase().includes(search) ||
-                    (b.category || "").toLowerCase().includes(search)
-                  );
-                });
-
-              return (
-                <>
-                  <SectionTitle title="Bills" />
-                  <div className="space-y-2">
-                    {visibleBills.map((b) => (
-                      <BillRow
-                        key={b.id}
-                        bill={b}
-                        onPay={() => payBill(b)}
-                        onEdit={() => startEditingBill(b)}
-                        onDelete={() => requestDelete("bills", b.id)}
-                        showDelete
-                      />
-                    ))}
-                    {visibleBills.length === 0 && <EmptyBox text="No bills match your filters." />}
                   </div>
-
-                  <SectionTitle title="Debts" />
-                  <div className="space-y-2">
-                    {visibleDebts.map((b) => (
-                      <BillRow
-                        key={b.id}
-                        bill={b}
-                        onPay={() => payBill(b)}
-                        onEdit={() => startEditingBill(b)}
-                        onDelete={() => requestDelete("bills", b.id)}
-                        showDelete
-                      />
-                    ))}
-                    {visibleDebts.length === 0 && <EmptyBox text="No debts match your filters." />}
-                  </div>
-                </>
-              );
-            })()}
-          </section>
-        )}
-
-        {tab === "goals" && (
-          <section className="space-y-4">
-            <div ref={goalFormRef}>
-  <PageCard title="Add savings goal" subtitle="Set how much you need to pay into each goal every month.">
-              <form onSubmit={addGoal} className="space-y-3">
-                <Field label="Goal name"><input className={inputClass} value={goalForm.name} onChange={(e) => setGoalForm({ ...goalForm, name: e.target.value })} placeholder="Emergency Fund" /></Field>
-                <Field label="Priority">
-                  <select className={inputClass} value={goalForm.priority} onChange={(e) => setGoalForm({ ...goalForm, priority: e.target.value })}>
-                    <option value="High">High</option>
-                    <option value="Medium">Medium</option>
-                    <option value="Low">Low</option>
-                  </select>
-                </Field>
-                <Field label="Target amount"><input className={inputClass} type="number" value={goalForm.target} onChange={(e) => setGoalForm({ ...goalForm, target: e.target.value })} /></Field>
-                <Field label="Current saved"><input className={inputClass} type="number" value={goalForm.current} onChange={(e) => setGoalForm({ ...goalForm, current: e.target.value })} /></Field>
-                <Field label="Monthly payment needed"><input className={inputClass} type="number" value={goalForm.monthlyTarget} onChange={(e) => setGoalForm({ ...goalForm, monthlyTarget: e.target.value })} /></Field>
-                <Button className="w-full rounded-2xl bg-slate-950 py-6 font-black text-white">{editingGoalId ? "Update goal" : "Save goal"}</Button>
-                {editingGoalId && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="w-full rounded-2xl border-slate-200 bg-white text-sm font-black text-slate-700"
-                    onClick={resetGoalForm}
-                  >
-                    Cancel edit
-                  </Button>
-                )}
-              </form>
-            </PageCard>
-            </div>
-
-            <div className="rounded-[1.4rem] border border-emerald-100 bg-emerald-50 p-4">
-              <p className="text-xs font-bold uppercase tracking-wide text-emerald-700">Total monthly goal payments</p>
-              <p className="mt-1 text-2xl font-black text-emerald-900">{peso.format(summary.goalMonthlyTarget)}</p>
-              <p className="mt-1 text-xs font-semibold text-emerald-700">
-                Remaining this month: {peso.format(summary.goalStillNeededThisMonth)}
-              </p>
-            </div>
-
-            <div className="space-y-3">
-              {data.goals.map((g) => <GoalRow key={g.id} goal={g} onEdit={() => startEditingGoal(g)} />)}
-            </div>
-          </section>
-        )}
-
-        {tab === "history" && (
-          <section className="space-y-4">
-            <PageCard
-              title="Monthly review"
-              subtitle="Choose any month to inspect your cash flow and transaction history."
-            >
-              <div className="space-y-3">
-                <Field label="Select month">
-                  <input
-                    className={inputClass}
-                    type="month"
-                    value={historyMonth}
-                    onChange={(e) => setHistoryMonth(e.target.value)}
-                  />
-                </Field>
-                <Field label="Type filter">
-                  <select className={inputClass} value={historyType} onChange={(e) => setHistoryType(e.target.value)}>
-                    <option value="all">All</option>
-                    <option value="income">Income</option>
-                    <option value="expense">Expense</option>
-                    <option value="bill_payment">Bill payment</option>
-                    <option value="debt_payment">Debt payment</option>
-                    <option value="savings">Savings contribution</option>
-                  </select>
-                </Field>
-                <Field label="Search category or notes">
-                  <input
-                    className={inputClass}
-                    value={historySearch}
-                    onChange={(e) => setHistorySearch(e.target.value)}
-                    placeholder="Search category or notes"
-                  />
-                </Field>
-              </div>
-
-              <div className="mt-4 grid grid-cols-2 gap-3">
-                <div className="rounded-2xl bg-emerald-50 p-3">
-                  <p className="text-[11px] font-bold uppercase tracking-wide text-emerald-700">Income</p>
-                  <p className="mt-2 text-lg font-black text-emerald-900">{peso.format(monthReview.selected.summary.income)}</p>
                 </div>
-                <div className="rounded-2xl bg-red-50 p-3">
-                  <p className="text-[11px] font-bold uppercase tracking-wide text-red-700">Expenses</p>
-                  <p className="mt-2 text-lg font-black text-red-900">{peso.format(monthReview.selected.summary.expenses)}</p>
-                </div>
-                <div className="rounded-2xl bg-slate-50 p-3">
-                  <p className="text-[11px] font-bold uppercase tracking-wide text-slate-700">Savings</p>
-                  <p className="mt-2 text-lg font-black text-slate-900">{peso.format(monthReview.selected.summary.savings)}</p>
-                </div>
-                <div className="rounded-2xl bg-amber-50 p-3">
-                  <p className="text-[11px] font-bold uppercase tracking-wide text-amber-700">Payments</p>
-                  <p className="mt-2 text-lg font-black text-amber-900">
-                    {peso.format(monthReview.selected.summary.billPayments + monthReview.selected.summary.debtPayments)}
-                  </p>
-                </div>
-              </div>
-            </PageCard>
+              )}
 
-            <SectionTitle title={`Transactions for ${monthReview.selected.label}`} />
-            <div className="space-y-2">
-              {monthReview.selected.transactions.length === 0 && <EmptyBox text={`No transactions recorded for ${monthReview.selected.label}.`} />}
-              {monthReview.selected.transactions.map((t) => (
-                <TransactionRow
-                  key={t.id}
-                  item={t}
-                  onEdit={() => startEditingTransaction(t)}
-                  onDelete={() => requestDelete("transactions", t.id)}
+              <div className="grid grid-cols-2 gap-3">
+                <SmallStat label="Cash Now" value={peso.format(summary.currentCash)} sub="Tracked cash balance" />
+                <SmallStat
+                  label="Goals This Month"
+                  value={peso.format(summary.goalStillNeededThisMonth)}
+                  sub={`${peso.format(summary.goalContributedThisMonth)} paid of ${peso.format(summary.goalMonthlyTarget)}`}
+                  danger={summary.goalStillNeededThisMonth > 0}
                 />
-              ))}
-            </div>
-          </section>
-        )}
-
-        {tab === "settings" && (
-          <section className="space-y-4">
-            <PageCard title="Account" subtitle="Manage your signed-in session details.">
-              <div className="rounded-[1.4rem] border border-slate-200 bg-slate-50 p-4">
-                <p className="text-xs font-bold uppercase tracking-[0.2em] text-slate-500">Signed in as</p>
-                <p className="mt-2 text-sm font-black text-slate-950">{currentUser?.email || (supabaseEnabled ? "Login required" : "Local development mode")}</p>
-                <p className="mt-2 text-xs text-slate-500">
-                  {currentUser
-                    ? "Your data is synced with your authenticated Supabase account."
-                    : supabaseEnabled
-                      ? "Sign in to unlock synced finance data."
-                      : "Local development mode keeps data in this browser only."}
-                </p>
+                <SmallStat
+                  label="Expected Income"
+                  value={peso.format(summary.expectedIncomeThisMonth)}
+                  sub="Scheduled this month"
+                />
+                <SmallStat
+                  label="Received Income"
+                  value={peso.format(summary.receivedIncomeThisMonth)}
+                  sub="Confirmed income this month"
+                />
+                <SmallStat
+                  label="Next Income"
+                  value={summary.nextIncomeSource ? peso.format(summary.nextIncomeSource.amount) : "None"}
+                  sub={summary.daysUntilIncome === null ? "Add an income source" : summary.daysUntilIncome === 0 ? "Today" : `${summary.daysUntilIncome} day(s) left`}
+                />
+                <SmallStat label="Debt Left" value={peso.format(summary.totalDebtBalance)} sub="Tracked debt balance" danger={summary.totalDebtBalance > 0} />
+                <SmallStat label="Monthly Bills" value={peso.format(summary.monthlyObligations)} sub="Recurring bills + active debts" danger={summary.monthlyObligations > 0} />
               </div>
-              {currentUser && (
-  <div className="mt-3">
-    <Button
-      type="button"
-      className="w-full rounded-2xl bg-slate-950 text-white"
-      onClick={async () => {
-        try {
-          setSyncStatus("Saving");
-          await saveRemoteState(data, currentUser.id);
-          saveUserLocalBackup(currentUser.id, data);
-          setLastSavedSnapshot(JSON.stringify(data));
-          setSyncStatus("Synced");
-          notify("Saved", "Your data has been saved to Supabase.");
-        } catch {
-          setSyncStatus("Sync failed");
-          notify("Sync failed", "Your data could not be saved to Supabase.");
-        }
-      }}
-    >
-      Save now
-    </Button>
-  </div>
-)}
-            </PageCard>
-            {process.env.NODE_ENV === "development" && (
-  <PageCard title="Debug sync status" subtitle="Development-only Supabase state check.">
-    <div className="space-y-1 rounded-[1.4rem] bg-slate-950 p-4 text-xs font-semibold text-white">
-      <p>supabaseEnabled: {String(supabaseEnabled)}</p>
-      <p>currentUser: {currentUser?.email || "none"}</p>
-      <p>currentUserId: {currentUser?.id || "none"}</p>
-      <p>userDataReady: {String(userDataReady)}</p>
-      <p>userDataSource: {userDataSource}</p>
-      <p>lastLoadedUserId: {lastLoadedUserId || "none"}</p>
-      <p>syncStatus: {syncStatus}</p>
-    </div>
-  </PageCard>
-)}
 
-            <PageCard title="Money setup" subtitle="Set your starting cash and track flexible income sources. Safe-to-spend uses confirmed income only.">
-              <div className="space-y-3">
-                <Field label="Starting cash">
-                  <input className={inputClass} type="number" value={data.startingCash} onChange={(e) => updateStartingCash(e.target.value)} />
-                </Field>
-                <p className="text-xs text-slate-500">
-                  Starting cash is your baseline cash balance. It is separate from income sources and does not create or edit them.
-                </p>
-              </div>
-            </PageCard>
-            <div ref={incomeSourceFormRef}>
-            <PageCard title="Income sources" subtitle="Add or edit your expected cash and mark each source as received or missed.">
-              <div className="space-y-3">
-                <Field label="Source name">
-                  <input
-                    className={inputClass}
-                    value={incomeSourceForm.name}
-                    onChange={(e) => setIncomeSourceForm((prev) => ({ ...prev, name: e.target.value }))}
-                    placeholder="Main Income"
-                  />
-                </Field>
-                <Field label="Amount">
+              <Card className="rounded-[1.7rem] border-0 shadow-sm">
+                <CardContent className="p-4">
+                  <div className="mb-3 flex items-center justify-between">
+                    <div>
+                      <h2 className="font-black">Can I buy this?</h2>
+                      <p className="text-xs text-slate-500">Checks bills plus your monthly savings goals.</p>
+                    </div>
+                    <ShieldCheck className="h-5 w-5 text-emerald-600" />
+                  </div>
                   <input
                     className={inputClass}
                     type="number"
-                    value={incomeSourceForm.amount}
-                    onChange={(e) => setIncomeSourceForm((prev) => ({ ...prev, amount: e.target.value }))}
-                    placeholder="26000"
+                    placeholder="Amount"
+                    value={decisionAmount}
+                    onChange={(e) => setDecisionAmount(e.target.value)}
                   />
-                </Field>
-                <Field label="Expected date">
-                  <input
-                    className={inputClass}
-                    type="date"
-                    value={incomeSourceForm.expectedDate}
-                    onChange={(e) => setIncomeSourceForm((prev) => ({ ...prev, expectedDate: e.target.value }))}
-                  />
-                </Field>
-                <div className="flex gap-2">
-                  <Button type="button" className="flex-1 rounded-2xl bg-slate-950 text-white" onClick={addIncomeSource}>
-                    {editingIncomeSourceId ? "Update source" : "Add source"}
+                  {decisionAmount && (
+                    <div
+                      className={`mt-3 rounded-2xl p-3 text-sm font-bold ${
+                        Number(decisionAmount) <= summary.safeToSpend
+                          ? "bg-emerald-50 text-emerald-700"
+                          : "bg-red-50 text-red-700"
+                      }`}
+                    >
+                      {Number(decisionAmount) <= summary.safeToSpend
+                        ? `Allowed. Safe money after buying: ${peso.format(summary.safeToSpend - Number(decisionAmount))}`
+                        : `Do not buy. You are short by ${peso.format(Number(decisionAmount) - summary.safeToSpend)}.`}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card className="rounded-[1.7rem] border-0 shadow-sm">
+                <CardContent className="p-4">
+                  <div className="mb-3 flex items-center justify-between">
+                    <div>
+                      <h2 className="font-black">Monthly goal payments</h2>
+                      <p className="text-xs text-slate-500">These are treated as required this month.</p>
+                    </div>
+                    <Target className="h-5 w-5 text-emerald-600" />
+                  </div>
+                  <div className="space-y-2">
+                    {data.goals.map((g) => (
+                      <div key={g.id} className="flex items-center justify-between rounded-2xl bg-slate-50 p-3">
+                        <div>
+                          <p className="text-sm font-black">{g.name}</p>
+                          <p className="text-xs text-slate-500">Monthly target</p>
+                        </div>
+                        <p className="font-black text-slate-950">{peso.format(g.monthlyTarget || 0)}</p>
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+
+              <SectionTitle title="Next bills to handle" action="View all" onClick={() => setTab("bills")} />
+              <div className="space-y-2">
+                {summary.unpaidBills.slice(0, 4).map((b) => (
+                  <BillRow key={b.id} bill={b} onPay={() => payBill(b)} />
+                ))}
+                {summary.unpaidBills.length === 0 && <EmptyBox text="No unpaid bills. Good. Keep it boring." />}
+              </div>
+
+              <SectionTitle title="Savings goals" action="View" onClick={() => setTab("goals")} />
+              <div className="space-y-3">
+                {data.goals.slice(0, 3).map((g) => (
+                  <GoalRow key={g.id} goal={g} />
+                ))}
+              </div>
+            </section>
+          )}
+
+          {tab === "add" && (
+            <div ref={transactionFormRef}>
+              <PageCard title="Add money movement" subtitle="Income, expense, bill payment, debt payment, or savings.">
+                <form onSubmit={addTransaction} className="space-y-3">
+                  <Field label="Date">
+                    <input className={inputClass} type="date" value={transactionForm.date} onChange={(e) => setTransactionForm({ ...transactionForm, date: e.target.value })} />
+                  </Field>
+                  <Field label="Type">
+                    <select className={inputClass} value={transactionForm.type} onChange={(e) => setTransactionForm({ ...transactionForm, type: e.target.value, linkedId: "" })}>
+                      <option value="income">Income</option>
+                      <option value="expense">Expense</option>
+                      <option value="bill_payment">Bill Payment</option>
+                      <option value="debt_payment">Debt Payment</option>
+                      <option value="savings">Savings Contribution</option>
+                    </select>
+                  </Field>
+                  {!["bill_payment", "debt_payment", "savings"].includes(transactionForm.type) && (
+                    <Field label="Category">
+                      <select className={inputClass} value={transactionForm.category} onChange={(e) => setTransactionForm({ ...transactionForm, category: e.target.value })}>
+                        <option>Salary</option>
+                        <option>Food</option>
+                        <option>Daughter</option>
+                        <option>Motorcycle</option>
+                        <option>Debt</option>
+                        <option>Bills</option>
+                        <option>Gym</option>
+                        <option>Vacation</option>
+                        <option>Shopping</option>
+                        <option>Going Out</option>
+                        <option>Coffee</option>
+                        <option>Family</option>
+                        <option>Business</option>
+                      </select>
+                    </Field>
+                  )}
+                  <Field label="Amount">
+                    <input className={inputClass} type="number" step="0.01" value={transactionForm.amount} onChange={(e) => setTransactionForm({ ...transactionForm, amount: e.target.value })} placeholder="0.00" />
+                  </Field>
+
+                  {["bill_payment", "debt_payment"].includes(transactionForm.type) && (
+                    <Field label="Link to bill/debt">
+                      <select className={inputClass} value={transactionForm.linkedId} onChange={(e) => setTransactionForm({ ...transactionForm, linkedId: e.target.value })}>
+                        <option value="">Not linked</option>
+                        {data.bills.filter((b) => b.status !== "Paid").map((b) => (
+                          <option key={b.id} value={b.id}>{b.name} · {peso.format(b.amount)}</option>
+                        ))}
+                      </select>
+                    </Field>
+                  )}
+
+                  {transactionForm.type === "savings" && (
+                    <Field label="Savings goal">
+                      <select className={inputClass} value={transactionForm.linkedId} onChange={(e) => setTransactionForm({ ...transactionForm, linkedId: e.target.value })}>
+                        <option value="">Choose goal</option>
+                        {data.goals.map((g) => <option key={g.id} value={g.id}>{g.name} · target {peso.format(g.monthlyTarget || 0)}/mo</option>)}
+                      </select>
+                    </Field>
+                  )}
+
+                  <Field label="Notes">
+                    <input className={inputClass} value={transactionForm.notes} onChange={(e) => setTransactionForm({ ...transactionForm, notes: e.target.value })} placeholder="Optional" />
+                  </Field>
+                  <Button className="w-full rounded-2xl bg-slate-950 py-6 text-base font-black text-white">
+                    {editingTransactionId ? "Update transaction" : "Save"}
                   </Button>
-                  {editingIncomeSourceId && (
+                  {editingTransactionId && (
                     <Button
                       type="button"
                       variant="outline"
-                      className="flex-1 rounded-2xl border-slate-200"
-                      onClick={resetIncomeSourceForm}
+                      className="w-full rounded-2xl border-slate-200 bg-white text-sm font-black text-slate-700"
+                      onClick={resetTransactionForm}
                     >
-                      Cancel
+                      Cancel edit
                     </Button>
                   )}
+                </form>
+              </PageCard>
+            </div>
+          )}
+
+          {tab === "bills" && (
+            <section className="space-y-4">
+              <div ref={billFormRef}>
+                <PageCard title="Add bill or debt" subtitle="Anything you need to pay later goes here first.">
+                  <form onSubmit={addBill} className="space-y-3">
+                    <Field label="Name"><input className={inputClass} value={billForm.name} onChange={(e) => setBillForm({ ...billForm, name: e.target.value })} placeholder="Example: Gym, SPayLater" /></Field>
+                    <Field label="Type"><select className={inputClass} value={billForm.type} onChange={(e) => setBillForm({ ...billForm, type: e.target.value, category: getBillCategory(e.target.value) })}><option>Bill</option><option>Debt</option></select></Field>
+                    <p className="-mt-1 text-xs font-semibold text-slate-500">Category is auto-assigned from the type you choose.</p>
+                    <Field label="Due date"><input className={inputClass} type="date" value={billForm.dueDate} onChange={(e) => setBillForm({ ...billForm, dueDate: e.target.value })} /></Field>
+                    <Field label="Amount due"><input className={inputClass} type="number" step="0.01" value={billForm.amount} onChange={(e) => setBillForm({ ...billForm, amount: e.target.value })} /></Field>
+                    {billForm.type === "Debt" && (
+                      <Field label="Debt balance"><input className={inputClass} type="number" step="0.01" value={billForm.balance} onChange={(e) => setBillForm({ ...billForm, balance: e.target.value })} placeholder="Only for debt" /></Field>
+                    )}
+                    <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white p-4 text-sm font-bold text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={billForm.recurring}
+                        onChange={(e) =>
+                          setBillForm({
+                            ...billForm,
+                            recurring: e.target.checked,
+                            recurrenceFrequency: e.target.checked ? billForm.recurrenceFrequency : "monthly",
+                            secondDueDay: e.target.checked ? billForm.secondDueDay : "",
+                          })
+                        }
+                      />
+                      {billForm.type === "Debt" ? "This debt repeats" : "Recurring obligation"}
+                    </label>
+
+                    {billForm.recurring && (
+                      <Field label="Repeat schedule">
+                        <select
+                          className={inputClass}
+                          value={billForm.recurrenceFrequency}
+                          onChange={(e) =>
+                            setBillForm({
+                              ...billForm,
+                              recurrenceFrequency: e.target.value,
+                              secondDueDay: e.target.value === "twice-monthly" ? billForm.secondDueDay : "",
+                            })
+                          }
+                        >
+                          <option value="monthly">Monthly</option>
+                          <option value="twice-monthly">Twice per month</option>
+                        </select>
+                      </Field>
+                    )}
+
+                    {billForm.recurring && billForm.recurrenceFrequency === "twice-monthly" && (
+                      <Field label="Second due day of the month">
+                        <input
+                          className={inputClass}
+                          type="number"
+                          min="1"
+                          max="31"
+                          value={billForm.secondDueDay}
+                          onChange={(e) => setBillForm({ ...billForm, secondDueDay: e.target.value })}
+                          placeholder="Example: 20"
+                        />
+                      </Field>
+                    )}
+                    {billForm.type === "Debt" && (
+                      <Field label="End date (optional)">
+                        <input className={inputClass} type="date" value={billForm.endDate} onChange={(e) => setBillForm({ ...billForm, endDate: e.target.value })} />
+                      </Field>
+                    )}
+                    <Button className="w-full rounded-2xl bg-slate-950 py-6 font-black text-white">{editingBillId ? "Update bill/debt" : "Save bill/debt"}</Button>
+                    {editingBillId && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="w-full rounded-2xl border-slate-200 bg-white text-sm font-black text-slate-700"
+                        onClick={resetBillForm}
+                      >
+                        Cancel edit
+                      </Button>
+                    )}
+                  </form>
+                </PageCard>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-[1.4rem] border border-blue-100 bg-blue-50 p-4">
+                  <p className="text-[11px] font-bold uppercase tracking-wide text-blue-700">Monthly bills</p>
+                  <p className="mt-2 text-2xl font-black text-slate-950">{peso.format(summary.monthlyBillsTotal)}</p>
+                  <p className="mt-1 text-xs font-semibold text-slate-600">Active recurring bills</p>
+                </div>
+                <div className="rounded-[1.4rem] border border-red-100 bg-red-50 p-4">
+                  <p className="text-[11px] font-bold uppercase tracking-wide text-red-700">Monthly debts</p>
+                  <p className="mt-2 text-2xl font-black text-slate-950">{peso.format(summary.monthlyDebtsTotal)}</p>
+                  <p className="mt-1 text-xs font-semibold text-slate-600">Active recurring debts</p>
                 </div>
               </div>
 
-              <div className="mt-4 space-y-2">
-                {data.incomeSources.length === 0 && <EmptyBox text="No income sources yet. Add one to start tracking expected cash." />}
-                {data.incomeSources.map((source) => {
-                  const statusTone =
-                    source.status === "Received"
-                      ? "bg-emerald-50 text-emerald-700 border-emerald-100"
-                      : source.status === "Missed"
-                        ? "bg-red-50 text-red-700 border-red-100"
-                        : "bg-amber-50 text-amber-700 border-amber-100";
-
-                  return (
-                    <div key={source.id} className="rounded-[1.4rem] border border-slate-200 bg-white p-4">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="text-sm font-black text-slate-950">{source.name}</p>
-                          <p className="mt-1 text-xs text-slate-500">Expected {source.expectedDate}</p>
-                        </div>
-                        <p className="text-sm font-black text-emerald-700">{peso.format(source.amount)}</p>
-                      </div>
-                      <div className="mt-3 flex flex-wrap items-center gap-2">
-                        <span className={`rounded-full border px-2.5 py-1 text-[10px] font-black uppercase tracking-wide ${statusTone}`}>
-                          {source.status}
-                        </span>
-                        {source.status !== "Received" && (
-                          <Button
-                            type="button"
-                            variant="outline"
-                            className="rounded-full border-slate-200 px-3 text-xs font-bold"
-                            onClick={() => markIncomeSourceReceived(source)}
-                          >
-                            Mark received
-                          </Button>
-                        )}
-                        {source.status !== "Missed" && (
-                          <Button
-                            type="button"
-                            variant="outline"
-                            className="rounded-full border-slate-200 px-3 text-xs font-bold"
-                            onClick={() => markIncomeSourceMissed(source)}
-                          >
-                            Mark missed
-                          </Button>
-                        )}
-                        <Button
-                          type="button"
-                          variant="outline"
-                          className="rounded-full border-slate-200 px-3 text-xs font-bold"
-                          onClick={() => startEditingIncomeSource(source)}
-                        >
-                          <Pencil className="mr-1 h-3.5 w-3.5" />
-                          Edit
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          className="rounded-full border-red-200 px-3 text-xs font-bold text-red-600"
-                          onClick={() => requestDelete("incomeSources", source.id)}
-                        >
-                          <Trash2 className="mr-1 h-3.5 w-3.5" />
-                          Delete
-                        </Button>
-                      </div>
-                    </div>
-                  );
-                })}
+              <div className="grid gap-3 sm:grid-cols-3">
+                <Field label="Search">
+                  <input
+                    className={inputClass}
+                    placeholder="Search name or category"
+                    value={billSearch}
+                    onChange={(e) => setBillSearch(e.target.value)}
+                  />
+                </Field>
+                <Field label="Type">
+                  <select className={inputClass} value={billTypeFilter} onChange={(e) => setBillTypeFilter(e.target.value)}>
+                    <option value="all">All</option>
+                    <option value="Bill">Bill</option>
+                    <option value="Debt">Debt</option>
+                  </select>
+                </Field>
+                <Field label="Status">
+                  <select className={inputClass} value={billStatusFilter} onChange={(e) => setBillStatusFilter(e.target.value)}>
+                    <option value="all">All</option>
+                    <option value="Pending">Pending</option>
+                    <option value="Partial">Partial</option>
+                    <option value="Paid">Paid</option>
+                  </select>
+                </Field>
               </div>
-            </PageCard>
-            </div>
-          </section>
-        )}
-      </div>
+
+              {(() => {
+                const visibleBills = data.bills
+                  .filter((b) => b.type === "Bill" && isActiveMonthlyObligation(b))
+                  .filter((b) => billTypeFilter === "all" || b.type === billTypeFilter)
+                  .filter((b) => billStatusFilter === "all" || b.status === billStatusFilter)
+                  .filter((b) => {
+                    const search = billSearch.trim().toLowerCase();
+                    return (
+                      search.length === 0 ||
+                      b.name.toLowerCase().includes(search) ||
+                      (b.category || "").toLowerCase().includes(search)
+                    );
+                  });
+
+                const visibleDebts = data.bills
+                  .filter((b) => b.type === "Debt" && isActiveMonthlyObligation(b))
+                  .filter((b) => billTypeFilter === "all" || b.type === billTypeFilter)
+                  .filter((b) => billStatusFilter === "all" || b.status === billStatusFilter)
+                  .filter((b) => {
+                    const search = billSearch.trim().toLowerCase();
+                    return (
+                      search.length === 0 ||
+                      b.name.toLowerCase().includes(search) ||
+                      (b.category || "").toLowerCase().includes(search)
+                    );
+                  });
+
+                return (
+                  <>
+                    <SectionTitle title="Bills" />
+                    <div className="space-y-2">
+                      {visibleBills.map((b) => (
+                        <BillRow
+                          key={b.id}
+                          bill={b}
+                          onPay={() => payBill(b)}
+                          onEdit={() => startEditingBill(b)}
+                          onDelete={() => requestDelete("bills", b.id)}
+                          showDelete
+                        />
+                      ))}
+                      {visibleBills.length === 0 && <EmptyBox text="No bills match your filters." />}
+                    </div>
+
+                    <SectionTitle title="Debts" />
+                    <div className="space-y-2">
+                      {visibleDebts.map((b) => (
+                        <BillRow
+                          key={b.id}
+                          bill={b}
+                          onPay={() => payBill(b)}
+                          onEdit={() => startEditingBill(b)}
+                          onDelete={() => requestDelete("bills", b.id)}
+                          showDelete
+                        />
+                      ))}
+                      {visibleDebts.length === 0 && <EmptyBox text="No debts match your filters." />}
+                    </div>
+                  </>
+                );
+              })()}
+            </section>
+          )}
+
+          {tab === "goals" && (
+            <section className="space-y-4">
+              <div ref={goalFormRef}>
+                <PageCard title="Add savings goal" subtitle="Set how much you need to pay into each goal every month.">
+                  <form onSubmit={addGoal} className="space-y-3">
+                    <Field label="Goal name"><input className={inputClass} value={goalForm.name} onChange={(e) => setGoalForm({ ...goalForm, name: e.target.value })} placeholder="Emergency Fund" /></Field>
+                    <Field label="Priority">
+                      <select className={inputClass} value={goalForm.priority} onChange={(e) => setGoalForm({ ...goalForm, priority: e.target.value })}>
+                        <option value="High">High</option>
+                        <option value="Medium">Medium</option>
+                        <option value="Low">Low</option>
+                      </select>
+                    </Field>
+                    <Field label="Target amount"><input className={inputClass} type="number" value={goalForm.target} onChange={(e) => setGoalForm({ ...goalForm, target: e.target.value })} /></Field>
+                    <Field label="Current saved"><input className={inputClass} type="number" value={goalForm.current} onChange={(e) => setGoalForm({ ...goalForm, current: e.target.value })} /></Field>
+                    <Field label="Monthly payment needed"><input className={inputClass} type="number" value={goalForm.monthlyTarget} onChange={(e) => setGoalForm({ ...goalForm, monthlyTarget: e.target.value })} /></Field>
+                    <Button className="w-full rounded-2xl bg-slate-950 py-6 font-black text-white">{editingGoalId ? "Update goal" : "Save goal"}</Button>
+                    {editingGoalId && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="w-full rounded-2xl border-slate-200 bg-white text-sm font-black text-slate-700"
+                        onClick={resetGoalForm}
+                      >
+                        Cancel edit
+                      </Button>
+                    )}
+                  </form>
+                </PageCard>
+              </div>
+
+              <div className="rounded-[1.4rem] border border-emerald-100 bg-emerald-50 p-4">
+                <p className="text-xs font-bold uppercase tracking-wide text-emerald-700">Total monthly goal payments</p>
+                <p className="mt-1 text-2xl font-black text-emerald-900">{peso.format(summary.goalMonthlyTarget)}</p>
+                <p className="mt-1 text-xs font-semibold text-emerald-700">
+                  Remaining this month: {peso.format(summary.goalStillNeededThisMonth)}
+                </p>
+              </div>
+
+              <div className="space-y-3">
+                {data.goals.map((g) => <GoalRow key={g.id} goal={g} onEdit={() => startEditingGoal(g)} />)}
+              </div>
+            </section>
+          )}
+
+          {tab === "history" && (
+            <section className="space-y-4">
+              <PageCard
+                title="Monthly review"
+                subtitle="Choose any month to inspect your cash flow and transaction history."
+              >
+                <div className="space-y-3">
+                  <Field label="Select month">
+                    <input
+                      className={inputClass}
+                      type="month"
+                      value={historyMonth}
+                      onChange={(e) => setHistoryMonth(e.target.value)}
+                    />
+                  </Field>
+                  <Field label="Type filter">
+                    <select className={inputClass} value={historyType} onChange={(e) => setHistoryType(e.target.value)}>
+                      <option value="all">All</option>
+                      <option value="income">Income</option>
+                      <option value="expense">Expense</option>
+                      <option value="bill_payment">Bill payment</option>
+                      <option value="debt_payment">Debt payment</option>
+                      <option value="savings">Savings contribution</option>
+                    </select>
+                  </Field>
+                  <Field label="Search category or notes">
+                    <input
+                      className={inputClass}
+                      value={historySearch}
+                      onChange={(e) => setHistorySearch(e.target.value)}
+                      placeholder="Search category or notes"
+                    />
+                  </Field>
+                </div>
+
+                <div className="mt-4 grid grid-cols-2 gap-3">
+                  <div className="rounded-2xl bg-emerald-50 p-3">
+                    <p className="text-[11px] font-bold uppercase tracking-wide text-emerald-700">Income</p>
+                    <p className="mt-2 text-lg font-black text-emerald-900">{peso.format(monthReview.selected.summary.income)}</p>
+                  </div>
+                  <div className="rounded-2xl bg-red-50 p-3">
+                    <p className="text-[11px] font-bold uppercase tracking-wide text-red-700">Expenses</p>
+                    <p className="mt-2 text-lg font-black text-red-900">{peso.format(monthReview.selected.summary.expenses)}</p>
+                  </div>
+                  <div className="rounded-2xl bg-slate-50 p-3">
+                    <p className="text-[11px] font-bold uppercase tracking-wide text-slate-700">Savings</p>
+                    <p className="mt-2 text-lg font-black text-slate-900">{peso.format(monthReview.selected.summary.savings)}</p>
+                  </div>
+                  <div className="rounded-2xl bg-amber-50 p-3">
+                    <p className="text-[11px] font-bold uppercase tracking-wide text-amber-700">Payments</p>
+                    <p className="mt-2 text-lg font-black text-amber-900">
+                      {peso.format(monthReview.selected.summary.billPayments + monthReview.selected.summary.debtPayments)}
+                    </p>
+                  </div>
+                </div>
+              </PageCard>
+
+              <SectionTitle title={`Transactions for ${monthReview.selected.label}`} />
+              <div className="space-y-2">
+                {monthReview.selected.transactions.length === 0 && <EmptyBox text={`No transactions recorded for ${monthReview.selected.label}.`} />}
+                {monthReview.selected.transactions.map((t) => (
+                  <TransactionRow
+                    key={t.id}
+                    item={t}
+                    onEdit={() => startEditingTransaction(t)}
+                    onDelete={() => requestDelete("transactions", t.id)}
+                  />
+                ))}
+              </div>
+            </section>
+          )}
+
+          {tab === "settings" && (
+            <section className="space-y-4">
+              <PageCard title="Account" subtitle="Manage your signed-in session details.">
+                <div className="rounded-[1.4rem] border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-xs font-bold uppercase tracking-[0.2em] text-slate-500">Signed in as</p>
+                  <p className="mt-2 text-sm font-black text-slate-950">{currentUser?.email || (supabaseEnabled ? "Login required" : "Local development mode")}</p>
+                  <p className="mt-2 text-xs text-slate-500">
+                    {currentUser
+                      ? "Your data is synced with your authenticated Supabase account."
+                      : supabaseEnabled
+                        ? "Sign in to unlock synced finance data."
+                        : "Local development mode keeps data in this browser only."}
+                  </p>
+                </div>
+                {currentUser && (
+                  <div className="mt-3">
+                    <Button
+                      type="button"
+                      className="w-full rounded-2xl bg-slate-950 text-white"
+                      onClick={async () => {
+                        try {
+                          setSyncStatus("Saving");
+                          await saveRemoteState(data, currentUser.id);
+                          saveUserLocalBackup(currentUser.id, data);
+                          setLastSavedSnapshot(JSON.stringify(data));
+                          setSyncStatus("Synced");
+                          notify("Saved", "Your data has been saved to Supabase.");
+                        } catch {
+                          setSyncStatus("Sync failed");
+                          notify("Sync failed", "Your data could not be saved to Supabase.");
+                        }
+                      }}
+                    >
+                      Save now
+                    </Button>
+                  </div>
+                )}
+              </PageCard>
+              {process.env.NODE_ENV === "development" && (
+                <PageCard title="Debug sync status" subtitle="Development-only Supabase state check.">
+                  <div className="space-y-1 rounded-[1.4rem] bg-slate-950 p-4 text-xs font-semibold text-white">
+                    <p>supabaseEnabled: {String(supabaseEnabled)}</p>
+                    <p>currentUser: {currentUser?.email || "none"}</p>
+                    <p>currentUserId: {currentUser?.id || "none"}</p>
+                    <p>userDataReady: {String(userDataReady)}</p>
+                    <p>userDataSource: {userDataSource}</p>
+                    <p>lastLoadedUserId: {lastLoadedUserId || "none"}</p>
+                    <p>syncStatus: {syncStatus}</p>
+                  </div>
+                </PageCard>
+              )}
+
+              <PageCard title="Money setup" subtitle="Set your starting cash and track flexible income sources. Safe-to-spend uses confirmed income only.">
+                <div className="space-y-3">
+                  <Field label="Starting cash">
+                    <input className={inputClass} type="number" value={data.startingCash} onChange={(e) => updateStartingCash(e.target.value)} />
+                  </Field>
+                  <p className="text-xs text-slate-500">
+                    Starting cash is your baseline cash balance. It is separate from income sources and does not create or edit them.
+                  </p>
+                </div>
+              </PageCard>
+              <div ref={incomeSourceFormRef}>
+                <PageCard title="Income sources" subtitle="Add or edit your expected cash and mark each source as received or missed.">
+                  <div className="space-y-3">
+                    <Field label="Source name">
+                      <input
+                        className={inputClass}
+                        value={incomeSourceForm.name}
+                        onChange={(e) => setIncomeSourceForm((prev) => ({ ...prev, name: e.target.value }))}
+                        placeholder="Main Income"
+                      />
+                    </Field>
+                    <Field label="Amount">
+                      <input
+                        className={inputClass}
+                        type="number"
+                        value={incomeSourceForm.amount}
+                        onChange={(e) => setIncomeSourceForm((prev) => ({ ...prev, amount: e.target.value }))}
+                        placeholder="26000"
+                      />
+                    </Field>
+                    <Field label="Expected date">
+                      <input
+                        className={inputClass}
+                        type="date"
+                        value={incomeSourceForm.expectedDate}
+                        onChange={(e) => setIncomeSourceForm((prev) => ({ ...prev, expectedDate: e.target.value }))}
+                      />
+                    </Field>
+                    <div className="flex gap-2">
+                      <Button type="button" className="flex-1 rounded-2xl bg-slate-950 text-white" onClick={addIncomeSource}>
+                        {editingIncomeSourceId ? "Update source" : "Add source"}
+                      </Button>
+                      {editingIncomeSourceId && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="flex-1 rounded-2xl border-slate-200"
+                          onClick={resetIncomeSourceForm}
+                        >
+                          Cancel
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="mt-4 space-y-2">
+                    {data.incomeSources.length === 0 && <EmptyBox text="No income sources yet. Add one to start tracking expected cash." />}
+                    {data.incomeSources.map((source) => {
+                      const statusTone =
+                        source.status === "Received"
+                          ? "bg-emerald-50 text-emerald-700 border-emerald-100"
+                          : source.status === "Missed"
+                            ? "bg-red-50 text-red-700 border-red-100"
+                            : "bg-amber-50 text-amber-700 border-amber-100";
+
+                      return (
+                        <div key={source.id} className="rounded-[1.4rem] border border-slate-200 bg-white p-4">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="text-sm font-black text-slate-950">{source.name}</p>
+                              <p className="mt-1 text-xs text-slate-500">Expected {source.expectedDate}</p>
+                            </div>
+                            <p className="text-sm font-black text-emerald-700">{peso.format(source.amount)}</p>
+                          </div>
+                          <div className="mt-3 flex flex-wrap items-center gap-2">
+                            <span className={`rounded-full border px-2.5 py-1 text-[10px] font-black uppercase tracking-wide ${statusTone}`}>
+                              {source.status}
+                            </span>
+                            {source.status !== "Received" && (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                className="rounded-full border-slate-200 px-3 text-xs font-bold"
+                                onClick={() => markIncomeSourceReceived(source)}
+                              >
+                                Mark received
+                              </Button>
+                            )}
+                            {source.status !== "Missed" && (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                className="rounded-full border-slate-200 px-3 text-xs font-bold"
+                                onClick={() => markIncomeSourceMissed(source)}
+                              >
+                                Mark missed
+                              </Button>
+                            )}
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className="rounded-full border-slate-200 px-3 text-xs font-bold"
+                              onClick={() => startEditingIncomeSource(source)}
+                            >
+                              <Pencil className="mr-1 h-3.5 w-3.5" />
+                              Edit
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              className="rounded-full border-red-200 px-3 text-xs font-bold text-red-600"
+                              onClick={() => requestDelete("incomeSources", source.id)}
+                            >
+                              <Trash2 className="mr-1 h-3.5 w-3.5" />
+                              Delete
+                            </Button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </PageCard>
+              </div>
+            </section>
+          )}
+        </div>
       ) : (
         <div className="mx-auto max-w-md px-4 pt-5 sm:max-w-lg">
           <header className="mb-5 flex items-center justify-between">
@@ -2996,21 +2992,21 @@ function BillRow({ bill, onPay, onEdit, onDelete, showDelete = false }) {
             <div className="mb-2 flex flex-wrap items-center gap-1.5">
               <span className={`rounded-full border px-2.5 py-1 text-[10px] font-black uppercase tracking-wide ${typeStyle}`}>{bill.type}</span>
               <span className={`rounded-full border px-2.5 py-1 text-[10px] font-black uppercase tracking-wide ${statusStyle}`}>{statusText}</span>
-             {bill.recurring && (
-  <span className="rounded-full border border-slate-100 bg-slate-50 px-2.5 py-1 text-[10px] font-black uppercase tracking-wide text-slate-500">
-    {bill.recurrenceFrequency === "twice-monthly" ? "2x Monthly" : "Monthly"}
-  </span>
-)}
+              {bill.recurring && (
+                <span className="rounded-full border border-slate-100 bg-slate-50 px-2.5 py-1 text-[10px] font-black uppercase tracking-wide text-slate-500">
+                  {bill.recurrenceFrequency === "twice-monthly" ? "2x Monthly" : "Monthly"}
+                </span>
+              )}
             </div>
             <p className="truncate text-base font-black text-slate-950">{bill.name}</p>
             <p className="mt-1 text-xs font-semibold text-slate-500">
               Due {bill.dueDate} {daysUntil >= 0 && !isPaid ? `· ${daysUntil} day(s)` : ""}
             </p>
             {bill.recurring && bill.recurrenceFrequency === "twice-monthly" && bill.secondDueDay && (
-  <p className="mt-1 text-xs font-semibold text-slate-500">
-    Twice-monthly schedule · second due day: {bill.secondDueDay}
-  </p>
-)}
+              <p className="mt-1 text-xs font-semibold text-slate-500">
+                Twice-monthly schedule · second due day: {bill.secondDueDay}
+              </p>
+            )}
             {isDebt && bill.endDate && (
               <p className="mt-1 text-xs font-semibold text-slate-500">Active until {bill.endDate}</p>
             )}
