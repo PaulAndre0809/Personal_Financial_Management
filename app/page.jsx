@@ -453,16 +453,20 @@ async function saveRemoteState(payload, userId) {
     return;
   }
 
+  const cleanPayload = migrateState(payload);
+
   const { error } = await supabase
     .from("money_guard_state")
     .upsert(
       {
         user_id: userId,
-        payload,
+        payload: cleanPayload,
         updated_at: new Date().toISOString(),
       },
       { onConflict: "user_id" }
-    );
+    )
+    .select("user_id")
+    .single();
 
   if (error) {
     throw error;
@@ -611,6 +615,39 @@ function getBillRemainingAmount(bill) {
   }
 
   return Number(bill.remainingAmount ?? bill.amount ?? 0);
+}
+
+function isCurrentMonth(date) {
+  return date?.slice(0, 7) === todayISO().slice(0, 7);
+}
+
+function getMonthlyDueAmount(bill) {
+  if (!bill || bill.status === "Paid") {
+    return 0;
+  }
+
+  const amount = Number(bill.amount || 0);
+  const remaining = Number(bill.remainingAmount ?? amount);
+  const balance = Number(bill.balance || 0);
+
+  if (bill.type === "Debt") {
+    if (balance > 0) {
+      return Math.min(Math.max(remaining, 0), amount, balance);
+    }
+
+    return Math.min(Math.max(remaining, 0), amount);
+  }
+
+  return Math.max(remaining, 0);
+}
+
+function getDebtBalanceAmount(bill) {
+  if (!bill || bill.type !== "Debt") {
+    return 0;
+  }
+
+  const balance = Number(bill.balance || 0);
+  return balance > 0 ? balance : getBillRemainingAmount(bill);
 }
 
 function getBillStatusFromRemaining(bill, remainingAmount) {
@@ -1161,6 +1198,9 @@ export default function MoneyGuardApp() {
     const daysUntilIncome = nextIncomeSource ? getDaysUntil(nextIncomeSource.expectedDate) : null;
 
     const activeMonthlyObligations = data.bills.filter(isActiveMonthlyObligation);
+    const currentMonthObligations = activeMonthlyObligations.filter(
+      (b) => b.status !== "Paid" && isCurrentMonth(b.dueDate)
+    );
     const unpaidBills = activeMonthlyObligations
       .filter((b) => b.status !== "Paid")
       .sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
@@ -1170,14 +1210,14 @@ export default function MoneyGuardApp() {
     const overdueBills = unpaidBills.filter((b) => new Date(b.dueDate) < new Date(todayISO()));
     const dueSoonBills = unpaidBills.filter((b) => getDaysUntil(b.dueDate) >= 0 && getDaysUntil(b.dueDate) <= 3);
 
-    const upcomingBillsTotal = upcomingBills.reduce((sum, b) => sum + getBillRemainingAmount(b), 0);
-    const monthlyObligations = activeMonthlyObligations.reduce((sum, b) => sum + getBillRemainingAmount(b), 0);
-    const monthlyBillsTotal = activeMonthlyObligations
+    const upcomingBillsTotal = upcomingBills.reduce((sum, b) => sum + getMonthlyDueAmount(b), 0);
+    const monthlyObligations = currentMonthObligations.reduce((sum, b) => sum + getMonthlyDueAmount(b), 0);
+    const monthlyBillsTotal = currentMonthObligations
       .filter((b) => b.type === "Bill")
-      .reduce((sum, b) => sum + getBillRemainingAmount(b), 0);
-    const monthlyDebtsTotal = activeMonthlyObligations
+      .reduce((sum, b) => sum + getMonthlyDueAmount(b), 0);
+    const monthlyDebtsTotal = currentMonthObligations
       .filter((b) => b.type === "Debt")
-      .reduce((sum, b) => sum + getBillRemainingAmount(b), 0);
+      .reduce((sum, b) => sum + getMonthlyDueAmount(b), 0);
 
     const goalMonthlyTarget = data.goals.reduce((sum, g) => sum + Number(g.monthlyTarget || 0), 0);
     const goalContributedThisMonth = data.transactions
@@ -1190,8 +1230,8 @@ export default function MoneyGuardApp() {
     const totalSavings = data.goals.reduce((sum, g) => sum + Number(g.current || 0), 0);
     const totalSavingsTarget = data.goals.reduce((sum, g) => sum + Number(g.target || 0), 0);
     const totalDebtBalance = data.bills
-      .filter((b) => b.type === "Debt")
-      .reduce((sum, b) => sum + getBillRemainingAmount(b), 0);
+      .filter((b) => b.type === "Debt" && b.status !== "Paid")
+      .reduce((sum, b) => sum + getDebtBalanceAmount(b), 0);
 
     const expensesThisMonth = data.transactions
       .filter((t) => ["expense", "bill_payment", "debt_payment"].includes(t.type))
@@ -1616,8 +1656,11 @@ export default function MoneyGuardApp() {
           : "",
       endDate: billForm.type === "Debt" ? billForm.endDate : "",
       remainingAmount:
-        billForm.type === "Debt" && billForm.balance !== ""
-          ? Number(billForm.balance || 0)
+        billForm.type === "Debt"
+          ? Math.min(
+              Number(billForm.amount || 0),
+              Number(billForm.balance || billForm.amount || 0)
+            )
           : Number(billForm.amount || 0),
       status: billForm.status || "Pending",
     };
@@ -2162,6 +2205,19 @@ export default function MoneyGuardApp() {
             )}
           </PageCard>
         </div>
+      ) : authReady && authRequired && currentUser && !userDataReady ? (
+        <div className="mx-auto max-w-md px-4 pt-5 sm:max-w-lg">
+          <header className="mb-5 flex items-center justify-between">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-600">Personal Finance</p>
+              <h1 className="text-2xl font-black tracking-tight">Money Guard</h1>
+              <p className="mt-1 text-xs font-semibold text-slate-500">{currentUser.email}</p>
+            </div>
+          </header>
+          <div className="rounded-[1.4rem] border border-slate-200 bg-white p-4 text-sm font-semibold text-slate-600">
+            Loading your saved finance data...
+          </div>
+        </div>
       ) : mounted ? (
         <div className="mx-auto max-w-md px-4 pt-5 sm:max-w-lg">
           <header className="mb-5 flex items-center justify-between">
@@ -2245,7 +2301,12 @@ export default function MoneyGuardApp() {
                   sub={summary.daysUntilIncome === null ? "Add an income source" : summary.daysUntilIncome === 0 ? "Today" : `${summary.daysUntilIncome} day(s) left`}
                 />
                 <SmallStat label="Debt Left" value={peso.format(summary.totalDebtBalance)} sub="Tracked debt balance" danger={summary.totalDebtBalance > 0} />
-                <SmallStat label="Monthly Bills" value={peso.format(summary.monthlyObligations)} sub="Recurring bills + active debts" danger={summary.monthlyObligations > 0} />
+                <SmallStat
+                  label="This Month Due"
+                  value={peso.format(summary.monthlyObligations)}
+                  sub="Bills + monthly debt payments due this month"
+                  danger={summary.monthlyObligations > 0}
+                />
               </div>
 
               <Card className="rounded-[1.7rem] border-0 shadow-sm">
