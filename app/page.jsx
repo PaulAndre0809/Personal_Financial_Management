@@ -1,7 +1,7 @@
 "use client";
 // @ts-nocheck
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   CalendarDays,
@@ -31,6 +31,8 @@ const todayISO = () => new Date().toISOString().slice(0, 10);
 const makeId = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const storageKey = "sama-money-guard-v4";
 const authCooldownStorageKey = "money-guard-auth-cooldown";
+const inactivityLimitMs = 15 * 60 * 1000; // 15 minutes
+const lastActivityStorageKey = "money-guard-last-activity";
 
 function getStoredAuthCooldown() {
   if (typeof window === "undefined") {
@@ -331,28 +333,31 @@ function migrateState(state) {
     ...merged,
     incomeSources: fallbackIncomeSources,
     bills: (merged.bills || []).map((b) => {
-      const normalized = {
-  recurring: false,
-  recurrenceFrequency: "monthly",
-  secondDueDay: "",
-  endDate: "",
-  status: "Pending",
-  ...b,
-};
-      normalized.amount = Number(normalized.amount || 0);
-      normalized.balance = Number(normalized.balance || 0);
-      normalized.remainingAmount = Number(
-        normalized.remainingAmount ??
-          (normalized.type === "Debt" ? normalized.balance : normalized.amount) ??
-          0
-      );
+  const normalized = {
+    recurring: false,
+    recurrenceFrequency: "monthly",
+    secondDueDay: "",
+    endDate: "",
+    status: "Pending",
+    ...b,
+  };
 
-      if (normalized.status === "Paid") {
-        normalized.remainingAmount = 0;
-      }
+  normalized.amount = Number(normalized.amount || 0);
+  normalized.balance = Number(normalized.balance || 0);
 
-      return normalized;
-    }),
+  const rawRemaining = Number(
+    normalized.remainingAmount ?? normalized.amount ?? 0
+  );
+
+  normalized.remainingAmount =
+    normalized.status === "Paid"
+      ? 0
+      : normalized.type === "Debt"
+        ? Math.min(rawRemaining || normalized.amount, normalized.amount)
+        : rawRemaining || normalized.amount;
+
+  return normalized;
+}),
     goals: (merged.goals || []).map((g) => ({ monthlyTarget: 0, priority: "Medium", ...g })),
   };
 }
@@ -371,6 +376,15 @@ function loadState() {
   } catch {
     return migrateState(demoDefaultState);
   }
+}
+
+function withTimeout(promise, ms = 5000, label = "Request timed out") {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      window.setTimeout(() => reject(new Error(label)), ms)
+    ),
+  ]);
 }
 
 async function initializeUserState(userId) {
@@ -596,12 +610,9 @@ function getBillRemainingAmount(bill) {
     return 0;
   }
 
-  if (bill.type === "Debt") {
-    return Number(bill.balance ?? bill.remainingAmount ?? bill.amount ?? 0);
-  }
-
   return Number(bill.remainingAmount ?? bill.amount ?? 0);
 }
+
 
 function getBillStatusFromRemaining(bill, remainingAmount) {
   const amount = Number(bill.amount || 0);
@@ -619,23 +630,28 @@ function getBillStatusFromRemaining(bill, remainingAmount) {
 
 function createNextBillInstance(bill, nextDueDate, override = {}) {
   const balance = Number(override.balance ?? bill.balance ?? 0);
-  const remainingAmount = Number(override.remainingAmount ?? (bill.type === "Debt" ? balance : Number(bill.amount || 0)));
+  const amount = Number(bill.amount || 0);
+
+  const remainingAmount = Number(
+    override.remainingAmount ??
+      (bill.type === "Debt" ? Math.min(amount, balance || amount) : amount)
+  );
 
   return {
-  id: makeId(),
-  name: bill.name,
-  type: bill.type,
-  dueDate: nextDueDate || bill.dueDate,
-  amount: Number(bill.amount || 0),
-  balance,
-  status: "Pending",
-  category: bill.category,
-  recurring: Boolean(bill.recurring),
-  recurrenceFrequency: bill.recurrenceFrequency || "monthly",
-  secondDueDay: bill.secondDueDay || "",
-  endDate: bill.endDate || "",
-  remainingAmount,
-};
+    id: makeId(),
+    name: bill.name,
+    type: bill.type,
+    dueDate: nextDueDate || bill.dueDate,
+    amount,
+    balance,
+    status: "Pending",
+    category: bill.category,
+    recurring: Boolean(bill.recurring),
+    recurrenceFrequency: bill.recurrenceFrequency || "monthly",
+    secondDueDay: bill.secondDueDay || "",
+    endDate: bill.endDate || "",
+    remainingAmount,
+  };
 }
 
 function updateBillAfterPayment(bill, paymentAmount) {
@@ -658,6 +674,7 @@ function updateBillAfterPayment(bill, paymentAmount) {
 function reverseBillPayment(bill, paymentAmount) {
   const currentRemaining = getBillRemainingAmount(bill);
   const nextRemaining = Math.min(Number(bill.amount || 0), currentRemaining + paymentAmount);
+
   const updatedBill = {
     ...bill,
     status: getBillStatusFromRemaining(bill, nextRemaining),
@@ -665,8 +682,7 @@ function reverseBillPayment(bill, paymentAmount) {
   };
 
   if (bill.type === "Debt") {
-    updatedBill.balance = currentRemaining + paymentAmount;
-    updatedBill.remainingAmount = updatedBill.balance;
+    updatedBill.balance = Number(bill.balance || 0) + paymentAmount;
   }
 
   return updatedBill;
@@ -782,39 +798,78 @@ export default function MoneyGuardApp() {
   const [lastLoadedUserId, setLastLoadedUserId] = useState(null);
   
   const [lastSavedSnapshot, setLastSavedSnapshot] = useState("");
+
+function scrollToRef(ref) {
+  window.setTimeout(() => {
+    ref.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  }, 80);
+}
+  const transactionFormRef = useRef(null);
+const billFormRef = useRef(null);
+const goalFormRef = useRef(null);
+const incomeSourceFormRef = useRef(null);
+
   const authRequired = Boolean(supabaseEnabled);
   const authBlocked = isProduction && !supabaseEnabled;
   const localOnlyMode = !supabaseEnabled && !isProduction;
   
   async function loadAndApplyUserState(userId, active = true) {
-    setUserDataReady(false);
-    setLastLoadedUserId(null);
-    setUserDataSource("loading");
+  setUserDataReady(false);
+  setLastLoadedUserId(null);
+  setUserDataSource("loading");
 
-  const result = await initializeUserState(userId);
+  try {
+    const result = await withTimeout(
+      initializeUserState(userId),
+      5000,
+      "Supabase took too long to load your finance data."
+    );
 
-  if (!active) {
-    return;
-  }
+    if (!active) {
+      return;
+    }
 
-  const nextPayload = migrateState(result.payload);
+    const nextPayload = migrateState(result.payload);
 
-  setData(nextPayload);
-  setLastLoadedUserId(userId);
-  setUserDataSource(result.source);
-  setLastSavedSnapshot(JSON.stringify(nextPayload));
-  setUserDataReady(true);
+    setData(nextPayload);
+    setLastLoadedUserId(userId);
+    setUserDataSource(result.source);
+    setLastSavedSnapshot(JSON.stringify(nextPayload));
+    setUserDataReady(true);
 
-  if (result.source === "remote" || result.source === "fresh") {
-    setSyncStatus("Synced");
-  } else if (result.source === "local-backup") {
-    setSyncStatus("Local backup");
-    notify("Loaded local backup", "Supabase could not be reached, so your local backup was loaded.");
-  } else if (result.source === "remote-error") {
+    if (result.source === "remote" || result.source === "fresh") {
+      setSyncStatus("Synced");
+    } else if (result.source === "local-backup") {
+      setSyncStatus("Local backup");
+      notify("Loaded local backup", "Supabase could not be reached, so your local backup was loaded.");
+    } else if (result.source === "remote-error") {
+      setSyncStatus("Sync failed");
+      notify("Sync failed", "Supabase could not load your data. No remote data was overwritten.");
+    } else {
+      setSyncStatus("Ready");
+    }
+  } catch (error) {
+    if (!active) {
+      return;
+    }
+
+    const localBackup = loadUserLocalBackup(userId);
+    const fallback = migrateState(localBackup || getCleanDefaultState());
+
+    setData(fallback);
+    setLastLoadedUserId(userId);
+    setUserDataSource(localBackup ? "local-backup-timeout" : "load-timeout");
+    setLastSavedSnapshot(JSON.stringify(fallback));
+    setUserDataReady(Boolean(localBackup));
     setSyncStatus("Sync failed");
-    notify("Sync failed", "Supabase could not load your data. No remote data was overwritten.");
-  } else {
-    setSyncStatus("Ready");
+
+    notify(
+      "Loading warning",
+      error?.message || "Finance data took too long to load. Local backup was used if available."
+    );
   }
 }
 
@@ -987,6 +1042,63 @@ useEffect(() => {
     if (!notification) {
       return;
     }
+    useEffect(() => {
+  if (!currentUser || !supabaseEnabled || !supabase) {
+    return;
+  }
+
+  let timeoutId;
+
+  function markActivity() {
+    window.localStorage.setItem(lastActivityStorageKey, String(Date.now()));
+
+    window.clearTimeout(timeoutId);
+    timeoutId = window.setTimeout(() => {
+      handleSignOut();
+      notify("Signed out", "You were signed out after being inactive.");
+    }, inactivityLimitMs);
+  }
+
+  const events = ["click", "keydown", "touchstart", "mousemove", "scroll"];
+
+  events.forEach((eventName) => {
+    window.addEventListener(eventName, markActivity, { passive: true });
+  });
+
+  markActivity();
+
+  return () => {
+    window.clearTimeout(timeoutId);
+    events.forEach((eventName) => {
+      window.removeEventListener(eventName, markActivity);
+    });
+  };
+}, [currentUser?.id]);
+
+useEffect(() => {
+  if (!currentUser || !supabaseEnabled || !supabase) {
+    return;
+  }
+
+  function checkStaleSession() {
+    const lastActivity = Number(window.localStorage.getItem(lastActivityStorageKey) || 0);
+
+    if (lastActivity && Date.now() - lastActivity > inactivityLimitMs) {
+      handleSignOut();
+      notify("Signed out", "You were signed out because the session was inactive.");
+    }
+  }
+
+  checkStaleSession();
+
+  window.addEventListener("focus", checkStaleSession);
+  document.addEventListener("visibilitychange", checkStaleSession);
+
+  return () => {
+    window.removeEventListener("focus", checkStaleSession);
+    document.removeEventListener("visibilitychange", checkStaleSession);
+  };
+}, [currentUser?.id]);
 
     const timeoutId = window.setTimeout(() => setNotification(null), 3200);
     return () => window.clearTimeout(timeoutId);
@@ -1264,39 +1376,65 @@ useEffect(() => {
   }
 
   async function handleSignOut() {
-    if (currentUser?.id) {
-      saveUserLocalBackup(currentUser.id, data);
+  const userId = currentUser?.id;
+  const clean = getCleanDefaultState();
 
-      if (supabaseEnabled && supabase) {
-        try {
-          await saveRemoteState(data, currentUser.id);
-          setSyncStatus("Synced");
-        } catch {
-          setSyncStatus("Sync failed");
-          notify("Sync failed", "Your changes are saved locally. Reconnect to sync again.");
-        }
-      }
+  if (userId) {
+    try {
+      saveUserLocalBackup(userId, data);
+    } catch {
+      // Local backup should not block sign out.
     }
-
-    if (supabaseEnabled && supabase) {
-      await supabase.auth.signOut();
-    }
-
-    setCurrentUser(null);
-    setLogoutConfirm(false);
-    setSyncStatus(supabaseEnabled ? "Ready" : "Local only");
-    setUserDataReady(false);
-    setLastLoadedUserId(null);
-    setUserDataSource("signed-out");
-    setLastSavedSnapshot(JSON.stringify(getCleanDefaultState()));
-    setData(getCleanDefaultState());
-    setAuthMode("login");
-    setAuthError("");
-    setAuthMessage("");
-    setAuthRecoveryAction(null);
-    setSignupSuccess(null);
-    setTab("dashboard");
   }
+
+  if (userId && supabaseEnabled && supabase) {
+    try {
+      setSyncStatus("Saving");
+
+      await Promise.race([
+        saveRemoteState(data, userId),
+        new Promise((_, reject) =>
+          window.setTimeout(() => reject(new Error("Sign out save timeout")), 3000)
+        ),
+      ]);
+
+      setSyncStatus("Synced");
+    } catch {
+      setSyncStatus("Sync failed");
+      notify(
+        "Sync warning",
+        "Your data was saved locally, but Supabase sync may not have completed before sign out."
+      );
+    }
+  }
+
+  if (supabaseEnabled && supabase) {
+    try {
+      await supabase.auth.signOut();
+    } catch {
+      notify("Sign out error", "Supabase sign out failed. Please refresh and try again.");
+    }
+  }
+
+  window.localStorage.removeItem(lastActivityStorageKey);
+
+  setCurrentUser(null);
+  setLogoutConfirm(false);
+  setAuthReady(true);
+  setMounted(true);
+  setSyncStatus(supabaseEnabled ? "Ready" : "Local only");
+  setUserDataReady(false);
+  setLastLoadedUserId(null);
+  setUserDataSource("signed-out");
+  setLastSavedSnapshot(JSON.stringify(clean));
+  setData(clean);
+  setAuthMode("login");
+  setAuthError("");
+  setAuthMessage("");
+  setAuthRecoveryAction(null);
+  setSignupSuccess(null);
+  setTab("dashboard");
+}
 
   function resetTransactionForm() {
     setTransactionForm({
@@ -1333,17 +1471,19 @@ useEffect(() => {
   }
 
   function startEditingTransaction(transaction) {
-    setEditingTransactionId(transaction.id);
-    setTransactionForm({
-      date: transaction.date,
-      type: transaction.type,
-      category: transaction.category || "Food",
-      amount: String(transaction.amount || 0),
-      notes: transaction.notes || "",
-      linkedId: transaction.linkedId || "",
-    });
-    setTab("add");
-  }
+  setEditingTransactionId(transaction.id);
+  setTransactionForm({
+    date: transaction.date,
+    type: transaction.type,
+    category: transaction.category || "Food",
+    amount: String(transaction.amount || 0),
+    notes: transaction.notes || "",
+    linkedId: transaction.linkedId || "",
+  });
+  setTab("add");
+  scrollToRef(transactionFormRef);
+  notify("Edit mode", "Scroll up to update this transaction.");
+}
 
   function startEditingBill(bill) {
   setEditingBillId(bill.id);
@@ -1361,19 +1501,23 @@ useEffect(() => {
     secondDueDay: bill.secondDueDay ? String(bill.secondDueDay) : "",
   });
   setTab("bills");
+  scrollToRef(billFormRef);
+  notify("Edit mode", "Scroll up to update this bill or debt.");
 }
 
   function startEditingGoal(goal) {
-    setEditingGoalId(goal.id);
-    setGoalForm({
-      name: goal.name,
-      target: String(goal.target || 0),
-      current: String(goal.current || 0),
-      monthlyTarget: String(goal.monthlyTarget || 0),
-      priority: goal.priority || "Medium",
-    });
-    setTab("goals");
-  }
+  setEditingGoalId(goal.id);
+  setGoalForm({
+    name: goal.name,
+    target: String(goal.target || 0),
+    current: String(goal.current || 0),
+    monthlyTarget: String(goal.monthlyTarget || 0),
+    priority: goal.priority || "Medium",
+  });
+  setTab("goals");
+  scrollToRef(goalFormRef);
+  notify("Edit mode", "Scroll up to update this goal.");
+}
 
   function addTransaction(e) {
     e.preventDefault();
@@ -1539,54 +1683,72 @@ if (
 }
 
   function handlePaymentConfirm() {
-    if (!paymentDialog) return;
+  if (!paymentDialog) return;
 
-    const { bill, paymentDate, nextDueDate, paymentAmount } = paymentDialog;
-    const amount = Number(paymentAmount);
-    const remaining = getBillRemainingAmount(bill);
+  const { bill, paymentDate, nextDueDate, paymentAmount } = paymentDialog;
+  const amount = Number(paymentAmount);
+  const remaining = getBillRemainingAmount(bill);
 
-    if (!amount || amount <= 0) {
-      notify("Action needed", "Enter a payment amount before saving.");
-      return;
-    }
-
-    if (amount > remaining) {
-      notify("Action needed", "This payment would exceed the current remaining amount for this item.");
-      return;
-    }
-
-    setData((prev) => {
-      const updatedBill = updateBillAfterPayment(bill, amount);
-      const bills = [updatedBill, ...prev.bills.filter((item) => item.id !== bill.id)];
-
-      if (bill.recurring && updatedBill.status === "Paid") {
-        bills.splice(1, 0, createNextBillInstance(bill, nextDueDate || computeNextDueDate(bill), {
-          balance: updatedBill.balance,
-          remainingAmount: updatedBill.remainingAmount,
-        }));
-      }
-
-      return {
-        ...prev,
-        bills,
-        transactions: [
-          {
-            id: makeId(),
-            date: paymentDate,
-            type: bill.type === "Debt" ? "debt_payment" : "bill_payment",
-            category: bill.category,
-            amount,
-            notes: `Payment for ${bill.name}`,
-            linkedId: bill.id,
-          },
-          ...prev.transactions,
-        ],
-      };
-    });
-
-    notify("Updated", `Payment recorded for ${bill.name}. Your ticket has been refreshed.`);
-    setPaymentDialog(null);
+  if (!amount || amount <= 0) {
+    notify("Action needed", "Enter a payment amount before saving.");
+    return;
   }
+
+  if (amount > remaining) {
+    notify("Action needed", "This payment would exceed the current remaining amount for this item.");
+    return;
+  }
+
+  setData((prev) => {
+    const updatedBill = updateBillAfterPayment(bill, amount);
+    const isFullyPaid = updatedBill.status === "Paid";
+
+    const paymentTransaction = {
+      id: makeId(),
+      date: paymentDate,
+      type: bill.type === "Debt" ? "debt_payment" : "bill_payment",
+      category: bill.category,
+      amount,
+      notes: `Payment for ${bill.name}`,
+      linkedId: bill.id,
+    };
+
+    let bills = prev.bills.filter((item) => item.id !== bill.id);
+
+    if (!isFullyPaid) {
+      bills = [updatedBill, ...bills];
+    }
+
+    if (bill.recurring && isFullyPaid) {
+      const nextBalance = Number(updatedBill.balance || 0);
+
+      if (bill.type !== "Debt" || nextBalance > 0) {
+        const nextInstance = createNextBillInstance(
+          bill,
+          nextDueDate || computeNextDueDate(bill),
+          {
+            balance: nextBalance,
+            remainingAmount:
+              bill.type === "Debt"
+                ? Math.min(Number(bill.amount || 0), nextBalance)
+                : Number(bill.amount || 0),
+          }
+        );
+
+        bills = [nextInstance, ...bills];
+      }
+    }
+
+    return {
+      ...prev,
+      bills,
+      transactions: [paymentTransaction, ...prev.transactions],
+    };
+  });
+
+  notify("Payment recorded", `Payment recorded for ${bill.name}. The next ticket was prepared if recurring.`);
+  setPaymentDialog(null);
+}
 
   function deleteItem(type, id) {
     const item = data[type].find((entry) => entry.id === id);
@@ -1624,14 +1786,16 @@ if (
   }
 
   function startEditingIncomeSource(source) {
-    setEditingIncomeSourceId(source.id);
-    setIncomeSourceForm({
-      name: source.name,
-      amount: String(source.amount || 0),
-      expectedDate: source.expectedDate || todayISO(),
-    });
-    setTab("settings");
-  }
+  setEditingIncomeSourceId(source.id);
+  setIncomeSourceForm({
+    name: source.name,
+    amount: String(source.amount || 0),
+    expectedDate: source.expectedDate || todayISO(),
+  });
+  setTab("settings");
+  scrollToRef(incomeSourceFormRef);
+  notify("Edit mode", "Scroll up to update this income source.");
+}
 
   function addIncomeSource(e) {
     e.preventDefault();
@@ -1818,7 +1982,9 @@ if (
         <div className="fixed inset-0 z-[50] flex items-center justify-center bg-slate-950/55 px-4">
           <div className="w-full max-w-md rounded-[1.6rem] bg-white p-5 shadow-2xl">
             <p className="text-lg font-black text-slate-950">Update payment ticket</p>
-            <p className="mt-1 text-sm text-slate-500">Choose when this payment happened and what the next due date should be.</p>
+            <p className="mt-1 text-sm text-slate-500">
+  Record this payment. If it is fully paid and recurring, the app will move it to the next due date.
+</p>
 
             <div className="mt-4 space-y-3">
               <Field label="Payment amount">
@@ -2158,7 +2324,9 @@ if (
         )}
 
         {tab === "add" && (
-          <PageCard title="Add money movement" subtitle="Income, expense, bill payment, debt payment, or savings.">
+          <div ref={transactionFormRef}>
+  <PageCard title="Add money movement" subtitle="Income, expense, bill payment, debt payment, or savings.">
+    
             <form onSubmit={addTransaction} className="space-y-3">
               <Field label="Date">
                 <input className={inputClass} type="date" value={transactionForm.date} onChange={(e) => setTransactionForm({ ...transactionForm, date: e.target.value })} />
@@ -2232,12 +2400,14 @@ if (
                 </Button>
               )}
             </form>
-          </PageCard>
+           </PageCard>
+</div>
         )}
 
         {tab === "bills" && (
           <section className="space-y-4">
-            <PageCard title="Add bill or debt" subtitle="Anything you need to pay later goes here first.">
+            <div ref={billFormRef}>
+  <PageCard title="Add bill or debt" subtitle="Anything you need to pay later goes here first.">
               <form onSubmit={addBill} className="space-y-3">
                 <Field label="Name"><input className={inputClass} value={billForm.name} onChange={(e) => setBillForm({ ...billForm, name: e.target.value })} placeholder="Example: Gym, SPayLater" /></Field>
                 <Field label="Type"><select className={inputClass} value={billForm.type} onChange={(e) => setBillForm({ ...billForm, type: e.target.value, category: getBillCategory(e.target.value) })}><option>Bill</option><option>Debt</option></select></Field>
@@ -2313,7 +2483,7 @@ if (
                 )}
               </form>
             </PageCard>
-
+</div>
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="rounded-[1.4rem] border border-blue-100 bg-blue-50 p-4">
                 <p className="text-[11px] font-bold uppercase tracking-wide text-blue-700">Monthly bills</p>
@@ -2419,7 +2589,8 @@ if (
 
         {tab === "goals" && (
           <section className="space-y-4">
-            <PageCard title="Add savings goal" subtitle="Set how much you need to pay into each goal every month.">
+            <div ref={goalFormRef}>
+  <PageCard title="Add savings goal" subtitle="Set how much you need to pay into each goal every month.">
               <form onSubmit={addGoal} className="space-y-3">
                 <Field label="Goal name"><input className={inputClass} value={goalForm.name} onChange={(e) => setGoalForm({ ...goalForm, name: e.target.value })} placeholder="Emergency Fund" /></Field>
                 <Field label="Priority">
@@ -2445,6 +2616,7 @@ if (
                 )}
               </form>
             </PageCard>
+            </div>
 
             <div className="rounded-[1.4rem] border border-emerald-100 bg-emerald-50 p-4">
               <p className="text-xs font-bold uppercase tracking-wide text-emerald-700">Total monthly goal payments</p>
@@ -2594,7 +2766,7 @@ if (
                 </p>
               </div>
             </PageCard>
-
+            <div ref={incomeSourceFormRef}>
             <PageCard title="Income sources" subtitle="Add or edit your expected cash and mark each source as received or missed.">
               <div className="space-y-3">
                 <Field label="Source name">
@@ -2706,6 +2878,7 @@ if (
                 })}
               </div>
             </PageCard>
+            </div>
           </section>
         )}
       </div>
