@@ -358,7 +358,12 @@ function migrateState(state) {
 
       return normalized;
     }),
-    goals: (merged.goals || []).map((g) => ({ monthlyTarget: 0, priority: "Medium", ...g })),
+    goals: (merged.goals || []).map((g) => ({
+      monthlyTarget: 0,
+      priority: "Medium",
+      dueMonth: g?.dueMonth || todayISO().slice(0, 7),
+      ...g,
+    })),
   };
 }
 
@@ -453,16 +458,20 @@ async function saveRemoteState(payload, userId) {
     return;
   }
 
+  const cleanPayload = migrateState(payload);
+
   const { error } = await supabase
     .from("money_guard_state")
     .upsert(
       {
         user_id: userId,
-        payload,
+        payload: cleanPayload,
         updated_at: new Date().toISOString(),
       },
       { onConflict: "user_id" }
-    );
+    )
+    .select("user_id")
+    .single();
 
   if (error) {
     throw error;
@@ -472,8 +481,14 @@ async function saveRemoteState(payload, userId) {
 function isActiveDebt(bill) {
   if (bill.type !== "Debt") return false;
   if (bill.status === "Paid") return false;
-  if (!bill.endDate) return Boolean(bill.recurring);
-  return new Date(bill.endDate) >= new Date(todayISO()) && Boolean(bill.recurring || bill.endDate);
+
+  const amount = Number(bill.amount || 0);
+  const balance = Number(bill.balance || 0);
+  const remaining = getBillRemainingAmount(bill);
+
+  // A debt is active while there is either a total balance left or a current payment ticket left.
+  // Do not hide one-time debts just because they are not recurring.
+  return balance > 0 || remaining > 0 || amount > 0;
 }
 
 function isActiveMonthlyObligation(bill) {
@@ -611,6 +626,39 @@ function getBillRemainingAmount(bill) {
   }
 
   return Number(bill.remainingAmount ?? bill.amount ?? 0);
+}
+
+function isCurrentMonth(date) {
+  return date?.slice(0, 7) === todayISO().slice(0, 7);
+}
+
+function getMonthlyDueAmount(bill) {
+  if (!bill || bill.status === "Paid") {
+    return 0;
+  }
+
+  const amount = Number(bill.amount || 0);
+  const remaining = Number(bill.remainingAmount ?? amount);
+  const balance = Number(bill.balance || 0);
+
+  if (bill.type === "Debt") {
+    if (balance > 0) {
+      return Math.min(Math.max(remaining, 0), amount, balance);
+    }
+
+    return Math.min(Math.max(remaining, 0), amount);
+  }
+
+  return Math.max(remaining, 0);
+}
+
+function getDebtBalanceAmount(bill) {
+  if (!bill || bill.type !== "Debt") {
+    return 0;
+  }
+
+  const balance = Number(bill.balance || 0);
+  return balance > 0 ? balance : getBillRemainingAmount(bill);
 }
 
 function getBillStatusFromRemaining(bill, remainingAmount) {
@@ -784,6 +832,7 @@ export default function MoneyGuardApp() {
     target: "",
     current: "",
     monthlyTarget: "",
+    dueMonth: toMonthInputValue(),
     priority: "Medium",
   });
   const [incomeSourceForm, setIncomeSourceForm] = useState({
@@ -796,10 +845,6 @@ export default function MoneyGuardApp() {
   const [userDataSource, setUserDataSource] = useState("none");
   const [lastLoadedUserId, setLastLoadedUserId] = useState(null);
   const [lastSavedSnapshot, setLastSavedSnapshot] = useState("");
-  // ── Use a ref so snapshot comparisons never cause extra re-renders,
-  //    and the async save callback can always update it without being
-  //    cancelled by the effect cleanup.
-  const lastSavedSnapshotRef = useRef("");
   const transactionFormRef = useRef(null);
   const billFormRef = useRef(null);
   const goalFormRef = useRef(null);
@@ -1165,6 +1210,15 @@ export default function MoneyGuardApp() {
     const daysUntilIncome = nextIncomeSource ? getDaysUntil(nextIncomeSource.expectedDate) : null;
 
     const activeMonthlyObligations = data.bills.filter(isActiveMonthlyObligation);
+    const activeBillTickets = activeMonthlyObligations.filter(
+      (b) => b.type === "Bill" && b.status !== "Paid"
+    );
+    const activeDebtTickets = activeMonthlyObligations.filter(
+      (b) => b.type === "Debt" && b.status !== "Paid"
+    );
+    const currentMonthObligations = activeMonthlyObligations.filter(
+      (b) => b.status !== "Paid" && isCurrentMonth(b.dueDate)
+    );
     const unpaidBills = activeMonthlyObligations
       .filter((b) => b.status !== "Paid")
       .sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
@@ -1174,28 +1228,37 @@ export default function MoneyGuardApp() {
     const overdueBills = unpaidBills.filter((b) => new Date(b.dueDate) < new Date(todayISO()));
     const dueSoonBills = unpaidBills.filter((b) => getDaysUntil(b.dueDate) >= 0 && getDaysUntil(b.dueDate) <= 3);
 
-    const upcomingBillsTotal = upcomingBills.reduce((sum, b) => sum + getBillRemainingAmount(b), 0);
-    const monthlyObligations = activeMonthlyObligations.reduce((sum, b) => sum + getBillRemainingAmount(b), 0);
-    const monthlyBillsTotal = activeMonthlyObligations
+    const upcomingBillsTotal = upcomingBills.reduce((sum, b) => sum + getMonthlyDueAmount(b), 0);
+    const monthlyObligations = currentMonthObligations.reduce((sum, b) => sum + getMonthlyDueAmount(b), 0);
+    const monthlyBillsTotal = currentMonthObligations
       .filter((b) => b.type === "Bill")
-      .reduce((sum, b) => sum + getBillRemainingAmount(b), 0);
-    const monthlyDebtsTotal = activeMonthlyObligations
+      .reduce((sum, b) => sum + getMonthlyDueAmount(b), 0);
+    const monthlyDebtsTotal = currentMonthObligations
       .filter((b) => b.type === "Debt")
-      .reduce((sum, b) => sum + getBillRemainingAmount(b), 0);
+      .reduce((sum, b) => sum + getMonthlyDueAmount(b), 0);
+    const billsSectionBillsTotal = activeBillTickets.reduce((sum, b) => sum + getMonthlyDueAmount(b), 0);
+    const billsSectionDebtsTotal = activeDebtTickets.reduce((sum, b) => sum + getDebtBalanceAmount(b), 0);
 
-    const goalMonthlyTarget = data.goals.reduce((sum, g) => sum + Number(g.monthlyTarget || 0), 0);
+    const activeGoalsThisMonth = data.goals.filter(
+      (goal) => (goal.dueMonth || currentMonth) === currentMonth
+    );
+    const activeGoalIdsThisMonth = new Set(activeGoalsThisMonth.map((goal) => goal.id));
+    const goalMonthlyTarget = activeGoalsThisMonth.reduce((sum, g) => sum + Number(g.monthlyTarget || 0), 0);
     const goalContributedThisMonth = data.transactions
-      .filter((t) => t.type === "savings")
+      .filter(
+        (t) =>
+          t.type === "savings" &&
+          t.date?.slice(0, 7) === currentMonth &&
+          activeGoalIdsThisMonth.has(t.linkedId)
+      )
       .reduce((sum, t) => sum + Number(t.amount || 0), 0);
     const goalStillNeededThisMonth = Math.max(goalMonthlyTarget - goalContributedThisMonth, 0);
 
-    const safeToSpend = currentCash - upcomingBillsTotal - goalStillNeededThisMonth;
+    const safeToSpend = currentCash - monthlyObligations - goalStillNeededThisMonth;
 
     const totalSavings = data.goals.reduce((sum, g) => sum + Number(g.current || 0), 0);
     const totalSavingsTarget = data.goals.reduce((sum, g) => sum + Number(g.target || 0), 0);
-    const totalDebtBalance = data.bills
-      .filter((b) => b.type === "Debt")
-      .reduce((sum, b) => sum + getBillRemainingAmount(b), 0);
+    const totalDebtBalance = billsSectionDebtsTotal;
 
     const expensesThisMonth = data.transactions
       .filter((t) => ["expense", "bill_payment", "debt_payment"].includes(t.type))
@@ -1226,6 +1289,9 @@ export default function MoneyGuardApp() {
       monthlyObligations,
       monthlyBillsTotal,
       monthlyDebtsTotal,
+      billsSectionBillsTotal,
+      billsSectionDebtsTotal,
+      activeGoalsThisMonth,
       goalMonthlyTarget,
       goalContributedThisMonth,
       goalStillNeededThisMonth,
@@ -1467,7 +1533,14 @@ export default function MoneyGuardApp() {
   }
 
   function resetGoalForm() {
-    setGoalForm({ name: "", target: "", current: "", monthlyTarget: "", priority: "Medium" });
+    setGoalForm({
+      name: "",
+      target: "",
+      current: "",
+      monthlyTarget: "",
+      dueMonth: toMonthInputValue(),
+      priority: "Medium",
+    });
     setEditingGoalId(null);
   }
 
@@ -1513,6 +1586,7 @@ export default function MoneyGuardApp() {
       target: String(goal.target || 0),
       current: String(goal.current || 0),
       monthlyTarget: String(goal.monthlyTarget || 0),
+      dueMonth: goal.dueMonth || toMonthInputValue(),
       priority: goal.priority || "Medium",
     });
     setTab("goals");
@@ -1620,8 +1694,11 @@ export default function MoneyGuardApp() {
           : "",
       endDate: billForm.type === "Debt" ? billForm.endDate : "",
       remainingAmount:
-        billForm.type === "Debt" && billForm.balance !== ""
-          ? Number(billForm.balance || 0)
+        billForm.type === "Debt"
+          ? Math.min(
+              Number(billForm.amount || 0),
+              Number(billForm.balance || billForm.amount || 0)
+            )
           : Number(billForm.amount || 0),
       status: billForm.status || "Pending",
     };
@@ -1659,6 +1736,7 @@ export default function MoneyGuardApp() {
       target: Number(goalForm.target),
       current: Number(goalForm.current || 0),
       monthlyTarget: Number(goalForm.monthlyTarget || 0),
+      dueMonth: goalForm.dueMonth || toMonthInputValue(),
     };
 
     setData((prev) => ({
@@ -2166,6 +2244,19 @@ export default function MoneyGuardApp() {
             )}
           </PageCard>
         </div>
+      ) : authReady && authRequired && currentUser && !userDataReady ? (
+        <div className="mx-auto max-w-md px-4 pt-5 sm:max-w-lg">
+          <header className="mb-5 flex items-center justify-between">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-[0.2em] text-emerald-600">Personal Finance</p>
+              <h1 className="text-2xl font-black tracking-tight">Money Guard</h1>
+              <p className="mt-1 text-xs font-semibold text-slate-500">{currentUser.email}</p>
+            </div>
+          </header>
+          <div className="rounded-[1.4rem] border border-slate-200 bg-white p-4 text-sm font-semibold text-slate-600">
+            Loading your saved finance data...
+          </div>
+        </div>
       ) : mounted ? (
         <div className="mx-auto max-w-md px-4 pt-5 sm:max-w-lg">
           <header className="mb-5 flex items-center justify-between">
@@ -2249,7 +2340,12 @@ export default function MoneyGuardApp() {
                   sub={summary.daysUntilIncome === null ? "Add an income source" : summary.daysUntilIncome === 0 ? "Today" : `${summary.daysUntilIncome} day(s) left`}
                 />
                 <SmallStat label="Debt Left" value={peso.format(summary.totalDebtBalance)} sub="Tracked debt balance" danger={summary.totalDebtBalance > 0} />
-                <SmallStat label="Monthly Bills" value={peso.format(summary.monthlyObligations)} sub="Recurring bills + active debts" danger={summary.monthlyObligations > 0} />
+                <SmallStat
+                  label="This Month Due"
+                  value={peso.format(summary.monthlyObligations)}
+                  sub="Bills + monthly debt payments due this month"
+                  danger={summary.monthlyObligations > 0}
+                />
               </div>
 
               <Card className="rounded-[1.7rem] border-0 shadow-sm">
@@ -2288,21 +2384,22 @@ export default function MoneyGuardApp() {
                 <CardContent className="p-4">
                   <div className="mb-3 flex items-center justify-between">
                     <div>
-                      <h2 className="font-black">Monthly goal payments</h2>
-                      <p className="text-xs text-slate-500">These are treated as required this month.</p>
+                      <h2 className="font-black">Goal payments this month</h2>
+                      <p className="text-xs text-slate-500">Only goals scheduled for this month reduce safe-to-spend.</p>
                     </div>
                     <Target className="h-5 w-5 text-emerald-600" />
                   </div>
                   <div className="space-y-2">
-                    {data.goals.map((g) => (
+                    {summary.activeGoalsThisMonth.map((g) => (
                       <div key={g.id} className="flex items-center justify-between rounded-2xl bg-slate-50 p-3">
                         <div>
                           <p className="text-sm font-black">{g.name}</p>
-                          <p className="text-xs text-slate-500">Monthly target</p>
+                          <p className="text-xs text-slate-500">Due {formatMonthLabel(g.dueMonth || toMonthInputValue())}</p>
                         </div>
                         <p className="font-black text-slate-950">{peso.format(g.monthlyTarget || 0)}</p>
                       </div>
                     ))}
+                    {summary.activeGoalsThisMonth.length === 0 && <EmptyBox text="No goal payments scheduled for this month." />}
                   </div>
                 </CardContent>
               </Card>
@@ -2486,14 +2583,14 @@ export default function MoneyGuardApp() {
               </div>
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="rounded-[1.4rem] border border-blue-100 bg-blue-50 p-4">
-                  <p className="text-[11px] font-bold uppercase tracking-wide text-blue-700">Monthly bills</p>
-                  <p className="mt-2 text-2xl font-black text-slate-950">{peso.format(summary.monthlyBillsTotal)}</p>
-                  <p className="mt-1 text-xs font-semibold text-slate-600">Active recurring bills</p>
+                  <p className="text-[11px] font-bold uppercase tracking-wide text-blue-700">Bills to pay</p>
+                  <p className="mt-2 text-2xl font-black text-slate-950">{peso.format(summary.billsSectionBillsTotal)}</p>
+                  <p className="mt-1 text-xs font-semibold text-slate-600">Total unpaid bill tickets</p>
                 </div>
                 <div className="rounded-[1.4rem] border border-red-100 bg-red-50 p-4">
-                  <p className="text-[11px] font-bold uppercase tracking-wide text-red-700">Monthly debts</p>
-                  <p className="mt-2 text-2xl font-black text-slate-950">{peso.format(summary.monthlyDebtsTotal)}</p>
-                  <p className="mt-1 text-xs font-semibold text-slate-600">Active recurring debts</p>
+                  <p className="text-[11px] font-bold uppercase tracking-wide text-red-700">Total debts</p>
+                  <p className="mt-2 text-2xl font-black text-slate-950">{peso.format(summary.billsSectionDebtsTotal)}</p>
+                  <p className="mt-1 text-xs font-semibold text-slate-600">Total unpaid debt balance</p>
                 </div>
               </div>
 
@@ -2603,6 +2700,17 @@ export default function MoneyGuardApp() {
                     <Field label="Target amount"><input className={inputClass} type="number" value={goalForm.target} onChange={(e) => setGoalForm({ ...goalForm, target: e.target.value })} /></Field>
                     <Field label="Current saved"><input className={inputClass} type="number" value={goalForm.current} onChange={(e) => setGoalForm({ ...goalForm, current: e.target.value })} /></Field>
                     <Field label="Monthly payment needed"><input className={inputClass} type="number" value={goalForm.monthlyTarget} onChange={(e) => setGoalForm({ ...goalForm, monthlyTarget: e.target.value })} /></Field>
+                    <Field label="Apply this goal payment to month">
+                      <input
+                        className={inputClass}
+                        type="month"
+                        value={goalForm.dueMonth}
+                        onChange={(e) => setGoalForm({ ...goalForm, dueMonth: e.target.value })}
+                      />
+                    </Field>
+                    <p className="-mt-1 text-xs font-semibold text-slate-500">
+                      This goal only reduces Safe to Spend during the selected month.
+                    </p>
                     <Button className="w-full rounded-2xl bg-slate-950 py-6 font-black text-white">{editingGoalId ? "Update goal" : "Save goal"}</Button>
                     {editingGoalId && (
                       <Button
@@ -2619,7 +2727,7 @@ export default function MoneyGuardApp() {
               </div>
 
               <div className="rounded-[1.4rem] border border-emerald-100 bg-emerald-50 p-4">
-                <p className="text-xs font-bold uppercase tracking-wide text-emerald-700">Total monthly goal payments</p>
+                <p className="text-xs font-bold uppercase tracking-wide text-emerald-700">Goal payments this month</p>
                 <p className="mt-1 text-2xl font-black text-emerald-900">{peso.format(summary.goalMonthlyTarget)}</p>
                 <p className="mt-1 text-xs font-semibold text-emerald-700">
                   Remaining this month: {peso.format(summary.goalStillNeededThisMonth)}
@@ -3064,6 +3172,7 @@ function GoalRow({ goal, onEdit }) {
         <div className="text-right">
           <p className="text-sm font-black text-emerald-700">{Math.round(progress)}%</p>
           <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">{goal.priority || "Medium"}</p>
+          <p className="text-[11px] font-semibold text-slate-400">{formatMonthLabel(goal.dueMonth || toMonthInputValue())}</p>
         </div>
       </div>
       <ProgressBar value={progress} />
