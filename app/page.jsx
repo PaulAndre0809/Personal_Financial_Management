@@ -2735,7 +2735,14 @@ export default function MoneyGuardApp() {
               </div>
 
               <div className="space-y-3">
-                {data.goals.map((g) => <GoalRow key={g.id} goal={g} onEdit={() => startEditingGoal(g)} />)}
+                {data.goals.map((g) => (
+                <GoalRow
+                  key={g.id}
+                  goal={g}
+                  onEdit={() => startEditingGoal(g)}
+                  onDelete={() => requestDelete("goals", g.id)}
+                />
+              ))}
               </div>
             </section>
           )}
@@ -3159,7 +3166,7 @@ function BillRow({ bill, onPay, onEdit, onDelete, showDelete = false }) {
   );
 }
 
-function GoalRow({ goal, onEdit }) {
+function GoalRow({ goal, onEdit, onDelete }) {
   const progress = (Number(goal.current || 0) / Math.max(Number(goal.target || 1), 1)) * 100;
   const amountLeft = Math.max(Number(goal.target || 0) - Number(goal.current || 0), 0);
   return (
@@ -3218,11 +3225,20 @@ function TransactionRow({ item, onEdit, onDelete }) {
       </div>
 
       <div className="mt-3 flex justify-end gap-2">
-        {onEdit && (
-          <Button size="sm" variant="outline" className="h-10 rounded-2xl border-slate-200 bg-white px-4 text-xs font-black text-slate-700" onClick={onEdit}>
-            <span className="flex items-center gap-1"><Pencil className="h-3.5 w-3.5" /> Edit</span>
-          </Button>
-        )}
+         {(onEdit || onDelete) && (
+        <div className="mt-3 flex justify-end gap-2">
+          {onEdit && (
+            <Button size="sm" variant="outline" className="h-10 rounded-2xl border-slate-200 bg-white px-4 text-xs font-black text-slate-700" onClick={onEdit}>
+              <span className="flex items-center gap-1"><Pencil className="h-3.5 w-3.5" /> Edit</span>
+            </Button>
+          )}
+          {onDelete && (
+            <Button size="sm" variant="outline" className="h-10 w-10 rounded-2xl border-red-100 bg-red-50 text-red-600 hover:bg-red-100" onClick={onDelete}>
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          )}
+        </div>
+      )}
         <Button size="sm" variant="outline" className="h-10 rounded-2xl border-red-100 bg-red-50 px-4 text-xs font-black text-red-700 hover:bg-red-100" onClick={onDelete}>
           Delete
         </Button>
